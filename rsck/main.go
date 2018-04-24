@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"io/ioutil"
 	"os"
 	"sort"
 	"strings"
@@ -34,6 +35,8 @@ var webAddr = flag.String("w", ":8242", "web listent address")
 var auth = flag.String("auth", "", "the basic auth(required)")
 var acl ArrayFlags
 var forword ArrayFlags
+var aclFile = flag.String("aclf", "", "the file of reverse access control level(required if not acl)")
+var forwardFile = flag.String("forward", "", "the file of the reverse forward")
 
 var runRunner = flag.Bool("r", false, "start as reverse channel runner")
 var name = flag.String("name", "", "the runner name")
@@ -43,7 +46,7 @@ var token = flag.String("token", "", "the login token")
 var runEcho = flag.Bool("e", true, "start as echo server")
 
 func init() {
-	flag.Var(&acl, "acl", "the reverse access control level(required)")
+	flag.Var(&acl, "acl", "the reverse access control level(required if not aclf)")
 	flag.Var(&forword, "f", "the reverse forward")
 }
 
@@ -178,7 +181,7 @@ var HTML = `
 `
 
 func startServer() {
-	if len(*auth) < 1 && len(acl) < 1 {
+	if len(*auth) < 1 && len(acl) < 1 && len(*aclFile) < 1 {
 		flag.Usage()
 		os.Exit(1)
 		return
@@ -249,7 +252,16 @@ func startServer() {
 		})
 		return routing.HRES_RETURN
 	})
+	if len(*aclFile) > 0 {
+		bys, err := ioutil.ReadFile(*aclFile)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		acl = append(acl, strings.Split(string(bys), "\n")...)
+	}
 	for _, entry := range acl {
+		entry = strings.TrimSpace(entry)
 		parts := strings.SplitN(entry, "=", 2)
 		if len(parts) < 2 {
 			log.W("the acl entry(%v) is invalid", entry)
@@ -257,7 +269,16 @@ func startServer() {
 		}
 		server.ACL[parts[0]] = parts[1]
 	}
+	if len(*forwardFile) > 0 {
+		bys, err := ioutil.ReadFile(*forwardFile)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		forword = append(forword, strings.Split(string(bys), "\n")...)
+	}
 	for _, f := range forword {
+		f = strings.TrimSpace(f)
 		network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
 		if err != nil {
 			log.W("the forward entry(%v) is invalid", f)
