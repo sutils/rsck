@@ -262,6 +262,9 @@ func startServer() {
 	}
 	for _, entry := range acl {
 		entry = strings.TrimSpace(entry)
+		if len(entry) < 1 {
+			continue
+		}
 		parts := strings.SplitN(entry, "=", 2)
 		if len(parts) < 2 {
 			log.W("the acl entry(%v) is invalid", entry)
@@ -279,6 +282,9 @@ func startServer() {
 	}
 	for _, f := range forword {
 		f = strings.TrimSpace(f)
+		if len(f) < 1 {
+			continue
+		}
 		network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
 		if err != nil {
 			log.W("the forward entry(%v) is invalid", f)
