@@ -15,6 +15,8 @@ import (
 	"github.com/Centny/gwf/util"
 )
 
+var ChannelByteTick = []byte{0}
+
 var ChannelByteLogin = []byte{10}
 
 var ChannelByteDail = []byte{20}
@@ -50,10 +52,12 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 		ListenersLck: sync.RWMutex{},
 	}
 	server.L = netw.NewListenerN(pool.BP, port, n, netw.NewCCH(server, server.obdh), impl.Json_NewCon)
+	// server.L.Runner_ = &netw.LenRunner{}
 	server.obdh.AddF(ChannelByteLogin[0], server.OnLoginF)
 	server.obdh.AddF(ChannelByteDail[0], server.OnDailBackF)
 	server.obdh.AddF(ChannelByteData[0], server.OnDataF)
 	server.obdh.AddF(ChannelByteClose[0], server.OnRawCloseF)
+	server.obdh.AddH(ChannelByteTick[0], netw.NewDoNotH())
 	return server
 }
 
@@ -325,7 +329,9 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 		rawConsLck: sync.RWMutex{},
 	}
 	runner.R = netw.NewNConRunnerN(pool.BP, addr, runner.obdh, impl.Json_NewCon)
+	// runner.R.Runner_ = &netw.LenRunner{}
 	runner.R.ConH = runner
+	runner.R.TickData = append(ChannelByteTick, []byte("Tick\n")...)
 	runner.obdh.AddF(ChannelByteDail[0], runner.OnDailF)
 	runner.obdh.AddF(ChannelByteData[0], runner.OnDataF)
 	runner.obdh.AddF(ChannelByteClose[0], runner.OnRawCloseF)
