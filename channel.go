@@ -74,6 +74,7 @@ func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error
 		return
 	}
 	cid := atomic.AddUint32(&c.sequence, 1)
+	log.D("ChannelServer start dail to %v/%v/%v by cid(%v)", name, network, uri, cid)
 	_, err = con.Writev2([]byte{ChannelByteDail[0]}, util.Map{
 		"cid":     cid,
 		"network": network,
@@ -90,16 +91,19 @@ func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error
 func (c *ChannelServer) AddForward(network, local, name, remote string, limit int) (err error) {
 	listener, err := net.Listen(network, local)
 	if err != nil {
+		log.W("ChannelServer add forward by %v://%v>%v://%v?limit=%v fail with %v", network, local, name, remote, limit, err)
 		return
 	}
 	c.ListenersLck.Lock()
 	c.Listeners[network+"/"+local] = listener
 	c.ListenersLck.Unlock()
 	go c.runForward(listener, name, network, remote, limit)
+	log.D("ChannelServer add forward by %v://%v>%v://%v?limit=%v success", network, local, name, remote, limit)
 	return
 }
 
 func (c *ChannelServer) RemoveForward(network, local string) {
+	log.D("ChannelServer removing forward by %v://%v success", network, local)
 	c.ListenersLck.Lock()
 	listener := c.Listeners[network+"/"+local]
 	delete(c.Listeners, network+"/"+local)
@@ -116,6 +120,7 @@ func (c *ChannelServer) runForward(listener net.Listener, name, network, remote 
 			log.E("ChannelServer forward listener(%v/%v/%v) accept fail with %v", listener.Addr(), name, remote, err)
 			break
 		}
+		log.D("ChannelServer forward listener(%v/%v/%v) accept from %v", listener.Addr(), name, remote, raw.RemoteAddr())
 		err = c.Dail(raw, name, network, remote)
 		if err != nil {
 			log.E("ChannelServer forward listener(%v/%v/%v) dail fail with %v", listener.Addr(), name, remote, err)
@@ -219,7 +224,12 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 }
 
 func (c *ChannelServer) readRawCon(name string, cid uint32, raw net.Conn) {
-	buf := make([]byte, 1024*1024)
+	var buf []byte
+	if netw.MOD_MAX_SIZE == 4 {
+		buf = make([]byte, 1024*1024*2)
+	} else {
+		buf = make([]byte, 50000)
+	}
 	binary.BigEndian.PutUint32(buf, cid)
 	for {
 		readed, err := raw.Read(buf[4:])
@@ -234,6 +244,7 @@ func (c *ChannelServer) readRawCon(name string, cid uint32, raw net.Conn) {
 			log.D("ChannelServer read %v raw con will stop by channel(%v) not found", cid, name)
 			break
 		}
+		log_d("ChannelServer read raw(%v):%v", cid, buf[4:readed+4])
 		_, err = channel.Writeb(ChannelByteData, buf[:readed+4])
 		if err != nil {
 			log.D("ChannelServer %v raw write to channel fail with %v", cid, err)
@@ -307,9 +318,8 @@ func (c *ChannelServer) OnClose(con netw.Con) {
 		delete(c.cons, name)
 	}
 	c.consLck.Unlock()
+	log.D("ChannelRunner channel(%v) from %v is closed", name, con.RemoteAddr())
 }
-
-// netw.NewListenerN(p *pool.BytePool, port string, n string, h netw.CCHandler, ncf netw.NewConF)
 
 type ChannelRunner struct {
 	R          *netw.NConRunner
@@ -331,7 +341,7 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 	runner.R = netw.NewNConRunnerN(pool.BP, addr, runner.obdh, impl.Json_NewCon)
 	// runner.R.Runner_ = &netw.LenRunner{}
 	runner.R.ConH = runner
-	runner.R.TickData = append(ChannelByteTick, []byte("Tick\n")...)
+	runner.R.TickData = append(ChannelByteTick, []byte("RsckTick\n")...)
 	runner.obdh.AddF(ChannelByteDail[0], runner.OnDailF)
 	runner.obdh.AddF(ChannelByteData[0], runner.OnDataF)
 	runner.obdh.AddF(ChannelByteClose[0], runner.OnRawCloseF)
@@ -380,6 +390,7 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 		"network": network,
 		"error":   "NONE",
 	})
+	log.D("ChannelRunner dail to %v/%v success", network, uri)
 	return 0
 }
 
@@ -404,7 +415,12 @@ func (c *ChannelRunner) OnDataF(con netw.Cmd) int {
 }
 
 func (c *ChannelRunner) readRawCon(cid uint32, raw net.Conn) {
-	buf := make([]byte, 1024*1024)
+	var buf []byte
+	if netw.MOD_MAX_SIZE == 4 {
+		buf = make([]byte, 1024*1024*2)
+	} else {
+		buf = make([]byte, 50000)
+	}
 	binary.BigEndian.PutUint32(buf, cid)
 	for {
 		readed, err := raw.Read(buf[4:])
@@ -412,18 +428,18 @@ func (c *ChannelRunner) readRawCon(cid uint32, raw net.Conn) {
 			log.D("ChannelRunner read %v raw conn fail with %v", cid, err)
 			break
 		}
-		channel := c.R.C
-		_, err = channel.Writeb(ChannelByteData, buf[:readed+4])
-		if err != nil {
-			log.D("ChannelRunner read %v raw and write to channel fail with %v", cid, err)
-			break
-		}
+		log_d("ChannelRunner read raw(%v):%v", cid, buf[4:readed+4])
+		c.R.Writeb(ChannelByteData, buf[:readed+4])
+		// if err != nil {
+		// 	log.D("ChannelRunner read %v raw and write to channel fail with %v", cid, err)
+		// 	break
+		// }
 	}
 	raw.Close()
 	c.rawConsLck.Lock()
 	delete(c.rawCons, cid)
 	c.rawConsLck.Unlock()
-	c.R.C.Writev2(ChannelByteClose, util.Map{
+	c.R.Writev2(ChannelByteClose, util.Map{
 		"cid": cid,
 	})
 }
@@ -446,11 +462,13 @@ func (c *ChannelRunner) OnRawCloseF(con netw.Cmd) int {
 	if rawCon != nil {
 		rawCon.Close()
 	}
+	log.D("ChannelRunner receive notify raw(%v) is closed", cid)
 	return 0
 }
 
 func (c *ChannelRunner) OnConn(con netw.Con) bool {
 	go func() {
+		log.D("ChannelRunner do login by name:%v,token:%v", c.Name, c.Token)
 		con.Writeb([]byte{ChannelByteLogin[0]}, []byte(util.S2Json(util.Map{
 			"name":  c.Name,
 			"token": c.Token,
@@ -460,4 +478,5 @@ func (c *ChannelRunner) OnConn(con netw.Con) bool {
 }
 
 func (c *ChannelRunner) OnClose(con netw.Con) {
+	log.D("ChannelRunner channel is closed")
 }

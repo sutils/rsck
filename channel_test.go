@@ -2,13 +2,20 @@ package rsck
 
 import (
 	"fmt"
+	"math/rand"
 	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Centny/gwf/netw"
 )
 
 func TestChannel(t *testing.T) {
+	netw.MOD_MAX_SIZE = 4
+	// MOD_MAX_SIZE = 4
+	netw.ShowLog = true
+	netw.ShowLog_C = true
 	server := NewChannelServer(":2832", "Server")
 	server.ACL["^[ax.*$"] = "abc"
 	server.ACL["^test.*$"] = "abc"
@@ -39,33 +46,42 @@ func TestChannel(t *testing.T) {
 		return
 	}
 	{
-		con, err := net.Dial("tcp", "localhost:2831")
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		wait := sync.WaitGroup{}
-		wait.Add(100)
-		go func() {
-			buf := make([]byte, 5)
-			for {
-				readed, err := con.Read(buf)
-				if err != nil {
-					break
-				}
-				if readed != len(buf) {
-					break
-				}
-				// fmt.Println("->", string(buf[:readed]))
-				wait.Done()
-			}
-		}()
+		wg := sync.WaitGroup{}
+		wg.Add(100)
 		for i := 0; i < 100; i++ {
-			con.Write([]byte("val-x"))
-			time.Sleep(time.Millisecond)
+			go func() {
+				con, err := net.Dial("tcp", "localhost:2831")
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				allwrited := 0
+				allreaded := 0
+				go func() {
+					buf := make([]byte, 10240)
+					for {
+						readed, err := con.Read(buf)
+						if err != nil {
+							break
+						}
+						allreaded += readed
+						// fmt.Println("->", string(buf[:readed]))
+						fmt.Printf("allreaded:%d,allwrited:%d\n", allreaded, allwrited)
+					}
+				}()
+				for i := 0; i < 100; i++ {
+					bys := make([]byte, rand.Int()%1024)
+					allwrited += len(bys)
+					con.Write(bys)
+				}
+				for allreaded < allwrited {
+					time.Sleep(time.Millisecond)
+				}
+				con.Close()
+				wg.Done()
+			}()
 		}
-		wait.Wait()
-		con.Close()
+		wg.Wait()
 	}
 	{
 		con, err := net.Dial("tcp", "localhost:2830")

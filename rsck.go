@@ -5,15 +5,17 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/Centny/gwf/log"
 )
 
-// var ShowLog int = 1
+var ShowLog int
 
-// func log_d(f string, args ...interface{}) {
-// 	if ShowLog > 0 {
-// 		log.D_(1, f, args...)
-// 	}
-// }
+func log_d(f string, args ...interface{}) {
+	if ShowLog > 0 {
+		log.D_(1, f, args...)
+	}
+}
 
 func ParseForwardUri(uri string) (network, local, name, remote string, limit int, err error) {
 	parts := strings.SplitN(uri, ">", 2)

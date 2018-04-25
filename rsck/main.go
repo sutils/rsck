@@ -10,6 +10,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Centny/gwf/pool"
+
+	"github.com/Centny/gwf/netw"
+
 	"github.com/Centny/gwf/routing"
 	"github.com/Centny/gwf/util"
 
@@ -81,6 +85,11 @@ func startRunner() {
 		os.Exit(1)
 		return
 	}
+	// netw.ShowLog = true
+	// netw.ShowLog_C = true
+	// impl.ShowLog = true
+	netw.MOD_MAX_SIZE = 4
+	pool.SetBytePoolMax(1024 * 1024 * 4)
 	runner := rsck.NewChannelRunner(*server, *name, *token)
 	runner.Start()
 	make(chan int) <- 0
@@ -186,6 +195,8 @@ func startServer() {
 		os.Exit(1)
 		return
 	}
+	netw.MOD_MAX_SIZE = 4
+	pool.SetBytePoolMax(1024 * 1024 * 4)
 	server := rsck.NewChannelServer(*listenAddr, "Reverse Server")
 	//
 	forwards := map[string]bool{}
