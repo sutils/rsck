@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -25,6 +26,40 @@ var ChannelByteData = []byte{30}
 
 var ChannelByteClose = []byte{40}
 
+type ForwardListener struct {
+	l                            net.Listener
+	Network, Local, Name, Remote string
+	Limit                        int
+}
+
+func (f *ForwardListener) String() string {
+	return fmt.Sprintf("%v://%v>%v://%v?limit=%v", f.Network, f.Local, f.Name, f.Remote, f.Limit)
+}
+
+type Channel struct {
+	Name   string
+	Online bool
+	FS     []*ForwardListener
+	Remote string
+}
+
+type fls []*ForwardListener
+
+func (f fls) Len() int {
+	return len(f)
+}
+
+func (f fls) Less(i, j int) bool {
+	if f[i].Name == f[j].Name {
+		return f[i].Local < f[j].Local
+	}
+	return f[i].Name < f[j].Name
+}
+
+func (f fls) Swap(i, j int) {
+	f[i], f[j] = f[j], f[i]
+}
+
 type ChannelServer struct {
 	L            *netw.Listener
 	obdh         *impl.OBDH
@@ -35,7 +70,7 @@ type ChannelServer struct {
 	sequence     uint32
 	rawCons      map[uint32]net.Conn
 	rawConsLck   sync.RWMutex
-	Listeners    map[string]net.Listener
+	Listeners    map[string]*ForwardListener
 	ListenersLck sync.RWMutex
 }
 
@@ -48,7 +83,7 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 		aclLck:       sync.RWMutex{},
 		rawCons:      map[uint32]net.Conn{},
 		rawConsLck:   sync.RWMutex{},
-		Listeners:    map[string]net.Listener{},
+		Listeners:    map[string]*ForwardListener{},
 		ListenersLck: sync.RWMutex{},
 	}
 	server.L = netw.NewListenerN(pool.BP, port, n, netw.NewCCH(server, server.obdh), impl.Json_NewCon)
@@ -63,6 +98,44 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 
 func (c *ChannelServer) Start() error {
 	return c.L.Run()
+}
+
+func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
+	c.consLck.RLock()
+	c.ListenersLck.RLock()
+	fs = map[string]*Channel{}
+	nameForward := map[string][]*ForwardListener{}
+	for _, f := range c.Listeners {
+		nameForward[f.Name] = append(nameForward[f.Name], f)
+	}
+	for name, nfs := range nameForward {
+		sort.Sort(fls(nfs))
+		con, online := c.cons[name]
+		fs[name] = &Channel{
+			FS:     nfs,
+			Name:   name,
+			Online: online,
+		}
+		if online {
+			fs[name].Remote = con.RemoteAddr().String()
+		}
+		ns = append(ns, name)
+	}
+	for name, con := range c.cons {
+		if _, ok := fs[name]; ok {
+			continue
+		}
+		fs[name] = &Channel{
+			Name:   name,
+			Online: true,
+			Remote: con.RemoteAddr().String(),
+		}
+		ns = append(ns, name)
+	}
+	c.ListenersLck.RUnlock()
+	c.consLck.RUnlock()
+	sort.Sort(util.NewStringSorter(ns))
+	return
 }
 
 func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error) {
@@ -89,15 +162,22 @@ func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error
 }
 
 func (c *ChannelServer) AddForward(network, local, name, remote string, limit int) (err error) {
-	listener, err := net.Listen(network, local)
+	l, err := net.Listen(network, local)
 	if err != nil {
 		log.W("ChannelServer add forward by %v://%v>%v://%v?limit=%v fail with %v", network, local, name, remote, limit, err)
 		return
 	}
 	c.ListenersLck.Lock()
-	c.Listeners[network+"/"+local] = listener
+	c.Listeners[network+"/"+local] = &ForwardListener{
+		l:       l,
+		Network: network,
+		Local:   local,
+		Name:    name,
+		Remote:  remote,
+		Limit:   limit,
+	}
 	c.ListenersLck.Unlock()
-	go c.runForward(listener, name, network, remote, limit)
+	go c.runForward(l, name, network, remote, limit)
 	log.D("ChannelServer add forward by %v://%v>%v://%v?limit=%v success", network, local, name, remote, limit)
 	return
 }
@@ -109,7 +189,7 @@ func (c *ChannelServer) RemoveForward(network, local string) {
 	delete(c.Listeners, network+"/"+local)
 	c.ListenersLck.Unlock()
 	if listener != nil {
-		listener.Close()
+		listener.l.Close()
 	}
 }
 

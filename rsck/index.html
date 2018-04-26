@@ -72,15 +72,18 @@
         <table>
             <tr>
                 <th>No</th>
+                <th>Name</th>
                 <th>Forward</th>
-                <th>Action</th>
             </tr>
-            {{range $k, $v := .forwards}}
+            {{range $k, $v := .ns}}
             <tr>
                 <td>{{$k}}</td>
                 <td>{{$v}}</td>
                 <td>
+                    {{range _, $f := $.forwards[$v]}}
+                    <span>{{$f.String()}}</span>
                     <a href="remove?idx={{$k}}">remove</a>
+                    {{end}}
                 </td>
             </tr>
             {{end}}

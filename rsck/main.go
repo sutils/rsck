@@ -6,16 +6,13 @@ import (
 	"html/template"
 	"io/ioutil"
 	"os"
-	"sort"
 	"strings"
-	"sync"
 
 	"github.com/Centny/gwf/pool"
 
 	"github.com/Centny/gwf/netw"
 
 	"github.com/Centny/gwf/routing"
-	"github.com/Centny/gwf/util"
 
 	"github.com/Centny/gwf/log"
 
@@ -105,38 +102,18 @@ var HTML = `
     <meta http-equiv="pragma" content="no-cache">
     <meta http-equiv="cache-control" content="no-cache">
     <style type="text/css">
-        .list table {
+        .boder_1px_t {
             border-collapse: collapse;
             border: 1px solid black;
         }
 
-        .list td {
+        .boder_1px {
             border: 1px solid black;
             padding: 8px;
             text-align: center;
         }
 
-        .list th {
-            border: 1px solid black;
-            padding: 8px;
-            text-align: center;
-        }
-
-        form table {
-            border: 0px;
-            padding: 0px;
-            margin: 0px;
-            border-spacing: 0px;
-        }
-
-        form td {
-            border: 0px;
-            padding: 0px;
-            margin: 0px;
-            border-spacing: 0px;
-        }
-
-        form th {
+		.noneborder {
             border: 0px;
             padding: 0px;
             margin: 0px;
@@ -167,25 +144,38 @@ var HTML = `
         </table>
     </form>
     <p class="list">
-        <table>
-            <tr>
-                <th>No</th>
-                <th>Forward</th>
-                <th>Action</th>
+        <table class="boder_1px_t" >
+            <tr class="boder_1px" >
+                <th class="boder_1px" >No</th>
+				<th class="boder_1px" >Name</th>
+				<th class="boder_1px" >Online</th>
+				<th class="boder_1px" >Remote</th>
+                <th class="boder_1px" >Forward</th>
             </tr>
-            {{range $k, $v := .forwards}}
-            <tr>
-                <td>{{$k}}</td>
-                <td>{{$v}}</td>
-                <td>
-                    <a href="remove?idx={{$k}}">remove</a>
+			{{range $k, $v := .ns}}
+			{{$channel := index $.forwards $v}}
+            <tr class="boder_1px" >
+                <td class="boder_1px" >{{$k}}</td>
+				<td class="boder_1px" >{{$channel.Name}}</td>
+				<td class="boder_1px" >{{$channel.Online}}</td>
+				<td class="boder_1px" >{{$channel.Remote}}</td>
+				<td class="boder_1px" >
+					<table class="noneborder" >
+						{{range $i, $f := $channel.FS}}
+						<tr class="noneborder" style="height:20px">
+							<td class="noneborder" >{{$f}}</td>
+							<td class="noneborder" >
+								<a style="margin-left:10px;" href="remove?network={{$f.Network}}&local={{$f.Local}}">remove</a>
+							</td>
+						</tr>
+						{{end}}
+					</table>
                 </td>
             </tr>
             {{end}}
         </table>
     </p>
 </body>
-
 </html>
 `
 
@@ -199,19 +189,6 @@ func startServer() {
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	server := rsck.NewChannelServer(*listenAddr, "Reverse Server")
 	//
-	forwards := map[string]bool{}
-	forwardsLck := sync.RWMutex{}
-	var sortedForwards = func() []string {
-		fs := []string{}
-		forwardsLck.RLock()
-		for key := range forwards {
-			fs = append(fs, key)
-		}
-		forwardsLck.RUnlock()
-		sort.Sort(util.NewStringSorter(fs))
-		return fs
-	}
-	//
 	routing.HFilterFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
 		username, password, ok := hs.R.BasicAuth()
 		if ok && *auth == fmt.Sprintf("%v:%s", username, password) {
@@ -223,18 +200,15 @@ func startServer() {
 		return routing.HRES_RETURN
 	})
 	routing.HFunc("^/remove(\\?.*)?$", func(hs *routing.HTTPSession) routing.HResult {
-		var idx int
-		var err = hs.ValidF(`idx,R|I,R:-1`, &idx)
+		var network, local string
+		var err = hs.ValidF(`
+			network,R|S,L:0;
+			local,R|S,L:0;
+			`, &network, &local)
 		if err != nil {
 			return hs.Printf("%v", err)
 		}
-		var fs = sortedForwards()
-		var f = fs[idx]
-		network, local, _, _, _, _ := rsck.ParseForwardUri(f)
 		server.RemoveForward(network, local)
-		forwardsLck.Lock()
-		delete(forwards, f)
-		forwardsLck.Unlock()
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
@@ -249,18 +223,20 @@ func startServer() {
 			if err != nil {
 				return hs.Printf("%v", err)
 			}
-			forwardsLck.Lock()
-			forwards[f] = true
-			forwardsLck.Unlock()
 		}
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
 	tpl, _ := template.New("n").Parse(HTML)
 	routing.HFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
-		tpl.Execute(hs.W, map[string]interface{}{
-			"forwards": sortedForwards(),
+		ns, forwards := server.AllForwards()
+		err := tpl.Execute(hs.W, map[string]interface{}{
+			"ns":       ns,
+			"forwards": forwards,
 		})
+		if err != nil {
+			log.E("Parse html fail with %v", err)
+		}
 		return routing.HRES_RETURN
 	})
 	if len(*aclFile) > 0 {
@@ -306,9 +282,6 @@ func startServer() {
 			log.W("add forward by entry(%v) fail with %v", f, err)
 			continue
 		}
-		forwardsLck.Lock()
-		forwards[f] = true
-		forwardsLck.Unlock()
 	}
 	server.Start()
 	log.D("listen web server on %v", *webAddr)
