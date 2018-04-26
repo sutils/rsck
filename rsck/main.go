@@ -1,14 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
 	"io/ioutil"
 	"os"
+	"os/user"
+	"sort"
 	"strings"
 
 	"github.com/Centny/gwf/pool"
+	"github.com/Centny/gwf/util"
 
 	"github.com/Centny/gwf/netw"
 
@@ -38,6 +42,7 @@ var acl ArrayFlags
 var forword ArrayFlags
 var aclFile = flag.String("aclf", "", "the file of reverse access control level(required if not acl)")
 var forwardFile = flag.String("forward", "", "the file of the reverse forward")
+var workspace *string
 
 var runRunner = flag.Bool("r", false, "start as reverse channel runner")
 var name = flag.String("name", "", "the runner name")
@@ -49,6 +54,11 @@ var runEcho = flag.Bool("e", true, "start as echo server")
 func init() {
 	flag.Var(&acl, "acl", "the reverse access control level(required if not aclf)")
 	flag.Var(&forword, "f", "the reverse forward")
+	usr, err := user.Current()
+	if err != nil {
+		panic(err)
+	}
+	workspace = flag.String("ws", usr.HomeDir+"/.rsck", "the workspace")
 }
 
 // var acl=flag.StringVar(p *string, name string, value string, usage string)
@@ -134,7 +144,7 @@ var HTML = `
 
 <body>
     <form action="add" method="POST">
-        <table>
+		<table>
             <td>
                 <textarea name="forwards"></textarea>
             </td>
@@ -143,19 +153,19 @@ var HTML = `
             </td>
         </table>
     </form>
-    <p class="list">
-        <table class="boder_1px_t" >
-            <tr class="boder_1px" >
-                <th class="boder_1px" >No</th>
+	<p class="list">
+		<table class="boder_1px_t" >
+			<tr class="boder_1px" >
+				<th class="boder_1px" >No</th>
 				<th class="boder_1px" >Name</th>
 				<th class="boder_1px" >Online</th>
 				<th class="boder_1px" >Remote</th>
-                <th class="boder_1px" >Forward</th>
-            </tr>
+				<th class="boder_1px" >Forward</th>
+			</tr>
 			{{range $k, $v := .ns}}
 			{{$channel := index $.forwards $v}}
-            <tr class="boder_1px" >
-                <td class="boder_1px" >{{$k}}</td>
+			<tr class="boder_1px" >
+				<td class="boder_1px" >{{$k}}</td>
 				<td class="boder_1px" >{{$channel.Name}}</td>
 				<td class="boder_1px" >{{$channel.Online}}</td>
 				<td class="boder_1px" >{{$channel.Remote}}</td>
@@ -165,19 +175,58 @@ var HTML = `
 						<tr class="noneborder" style="height:20px">
 							<td class="noneborder" >{{$f}}</td>
 							<td class="noneborder" >
-								<a style="margin-left:10px;" href="remove?network={{$f.Network}}&local={{$f.Local}}">remove</a>
+								<a style="margin-left:10px;" href="remove?network={{$f.Network}}&local={{$f.Local}}">Remove</a>
 							</td>
 						</tr>
 						{{end}}
 					</table>
-                </td>
-            </tr>
-            {{end}}
-        </table>
-    </p>
+				</td>
+			</tr>
+			{{end}}
+		</table>
+	</p>
+	<table class="boder_1px" style="position:absolute;right:30px;top:5px;">
+		{{range $i, $r := $.recents}}
+		{{$f := index $r "forward"}}
+		<tr class="noneborder" style="height:20px;text-align:left;">
+			<td class="noneborder" >{{$f}}</td>
+			<td class="noneborder" >
+				<a style="margin-left:10px;" href="add?forwards={{$f}}">Add</a>
+			</td>
+		</tr>
+		{{end}}
+	</table>
 </body>
 </html>
 `
+
+func readRecent() (recent map[string]int) {
+	recent = map[string]int{}
+	bys, err := ioutil.ReadFile(*workspace + "/recent.json")
+	if err != nil && !os.IsNotExist(err) {
+		log.W("read recent from %v fail with %v", *workspace+"/recent.json", err)
+		return
+	}
+	err = json.Unmarshal(bys, &recent)
+	if err != nil {
+		log.W("nmarshal recent json data on %v fail with %v", *workspace+"/recent.json", err)
+		return
+	}
+	return
+}
+
+func writeRecent(recent map[string]int) {
+	bys, err := json.Marshal(recent)
+	if err != nil {
+		log.W("marshal recent json fail with %v", err)
+		return
+	}
+	err = ioutil.WriteFile(*workspace+"/recent.json", bys, os.ModePerm)
+	if err != nil {
+		log.W("save recent to %v fail with %v", *workspace+"/recent.json", err)
+		return
+	}
+}
 
 func startServer() {
 	if len(*auth) < 1 && len(acl) < 1 && len(*aclFile) < 1 {
@@ -185,6 +234,7 @@ func startServer() {
 		os.Exit(1)
 		return
 	}
+	os.MkdirAll(*workspace, os.ModePerm)
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	server := rsck.NewChannelServer(*listenAddr, "Reverse Server")
@@ -213,8 +263,12 @@ func startServer() {
 		return routing.HRES_RETURN
 	})
 	routing.HFunc("^/add(\\?.*)?$", func(hs *routing.HTTPSession) routing.HResult {
+		oldRecent := readRecent()
 		for _, f := range strings.Split(hs.RVal("forwards"), "\n") {
 			f = strings.TrimSpace(f)
+			if len(f) < 1 {
+				continue
+			}
 			network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
 			if err != nil {
 				return hs.Printf("%v", err)
@@ -223,16 +277,52 @@ func startServer() {
 			if err != nil {
 				return hs.Printf("%v", err)
 			}
+			oldRecent[f]++
 		}
+		writeRecent(oldRecent)
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
 	tpl, _ := template.New("n").Parse(HTML)
 	routing.HFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
 		ns, forwards := server.AllForwards()
+		oldRecent := readRecent()
+		recents := []util.Map{}
+		for f, c := range oldRecent {
+			network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
+			if err != nil {
+				continue
+			}
+			using := false
+			if channel, ok := forwards[name]; ok {
+				for _, f := range channel.FS {
+					if f.Local == local {
+						using = true
+						break
+					}
+				}
+			}
+			if using {
+				continue
+			}
+			recents = append(recents, util.Map{
+				"forward": &rsck.ForwardListener{
+					Network: network,
+					Local:   local,
+					Name:    name,
+					Remote:  remote,
+					Limit:   limit,
+				},
+				"used": c,
+			})
+		}
+		sorter := util.NewMapIntSorter("used", recents)
+		sorter.Desc = true
+		sort.Sort(sorter)
 		err := tpl.Execute(hs.W, map[string]interface{}{
 			"ns":       ns,
 			"forwards": forwards,
+			"recents":  recents,
 		})
 		if err != nil {
 			log.E("Parse html fail with %v", err)

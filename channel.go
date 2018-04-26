@@ -197,13 +197,13 @@ func (c *ChannelServer) runForward(listener net.Listener, name, network, remote 
 	for {
 		raw, err := listener.Accept()
 		if err != nil {
-			log.E("ChannelServer forward listener(%v/%v/%v) accept fail with %v", listener.Addr(), name, remote, err)
+			log.D("ChannelServer forward listener(%v/%v/%v) accept fail with %v", listener.Addr(), name, remote, err)
 			break
 		}
 		log.D("ChannelServer forward listener(%v/%v/%v) accept from %v", listener.Addr(), name, remote, raw.RemoteAddr())
 		err = c.Dail(raw, name, network, remote)
 		if err != nil {
-			log.E("ChannelServer forward listener(%v/%v/%v) dail fail with %v", listener.Addr(), name, remote, err)
+			log.W("ChannelServer forward listener(%v/%v/%v) dail fail with %v", listener.Addr(), name, remote, err)
 			raw.Close()
 			continue
 		}
