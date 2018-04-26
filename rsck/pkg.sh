@@ -12,7 +12,7 @@ mkdir -p $output
 
 #### Package ####
 srv_name=rsck
-srv_ver=1.0.0
+srv_ver=1.1.0
 ##
 srv_deamon="$srv_name"d
 srv_out=$output/$srv_name
@@ -32,6 +32,6 @@ if [ "$1" != "" ];then
 fi
 ###
 cd $output
-zip -r $srv_name.zip $srv_name
+zip -r $srv_name-$srv_ver.zip $srv_name
 cd ../
 echo "Package $srv_name done..."
