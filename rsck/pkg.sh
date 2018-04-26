@@ -32,6 +32,6 @@ if [ "$1" != "" ];then
 fi
 ###
 cd $output
-zip -r $srv_name-$srv_ver.zip $srv_name
+zip -r $srv_name-$srv_ver-`uname`.zip $srv_name
 cd ../
 echo "Package $srv_name done..."
