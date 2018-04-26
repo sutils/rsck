@@ -98,6 +98,9 @@ func startRunner() {
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	runner := rsck.NewChannelRunner(*server, *name, *token)
+	runner.AddDailer(rsck.NewCmdDailer())
+	runner.AddDailer(rsck.NewWebDailer())
+	runner.AddDailer(rsck.NewTCPDailer())
 	runner.Start()
 	make(chan int) <- 0
 }
@@ -175,7 +178,7 @@ var HTML = `
 						<tr class="noneborder" style="height:20px">
 							<td class="noneborder" >{{$f}}</td>
 							<td class="noneborder" >
-								<a style="margin-left:10px;" href="remove?network={{$f.Network}}&local={{$f.Local}}">Remove</a>
+								<a style="margin-left:10px;" href="remove?local={{$f.Local}}">Remove</a>
 							</td>
 						</tr>
 						{{end}}
@@ -250,15 +253,14 @@ func startServer() {
 		return routing.HRES_RETURN
 	})
 	routing.HFunc("^/remove(\\?.*)?$", func(hs *routing.HTTPSession) routing.HResult {
-		var network, local string
+		var local string
 		var err = hs.ValidF(`
-			network,R|S,L:0;
 			local,R|S,L:0;
-			`, &network, &local)
+			`, &local)
 		if err != nil {
 			return hs.Printf("%v", err)
 		}
-		server.RemoveForward(network, local)
+		server.RemoveForward(local)
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
@@ -269,11 +271,7 @@ func startServer() {
 			if len(f) < 1 {
 				continue
 			}
-			network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
-			if err != nil {
-				return hs.Printf("%v", err)
-			}
-			err = server.AddForward(network, local, name, remote, limit)
+			err := server.AddUriForward(f)
 			if err != nil {
 				return hs.Printf("%v", err)
 			}
@@ -289,14 +287,14 @@ func startServer() {
 		oldRecent := readRecent()
 		recents := []util.Map{}
 		for f, c := range oldRecent {
-			network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
+			oldForward, err := rsck.NewForward(f)
 			if err != nil {
 				continue
 			}
 			using := false
-			if channel, ok := forwards[name]; ok {
-				for _, f := range channel.FS {
-					if f.Local == local {
+			if channel, ok := forwards[oldForward.Name]; ok {
+				for _, runningForward := range channel.FS {
+					if oldForward.String() == runningForward.String() {
 						using = true
 						break
 					}
@@ -306,14 +304,8 @@ func startServer() {
 				continue
 			}
 			recents = append(recents, util.Map{
-				"forward": &rsck.ForwardListener{
-					Network: network,
-					Local:   local,
-					Name:    name,
-					Remote:  remote,
-					Limit:   limit,
-				},
-				"used": c,
+				"forward": oldForward,
+				"used":    c,
 			})
 		}
 		sorter := util.NewMapIntSorter("used", recents)
@@ -362,12 +354,7 @@ func startServer() {
 		if len(f) < 1 {
 			continue
 		}
-		network, local, name, remote, limit, err := rsck.ParseForwardUri(f)
-		if err != nil {
-			log.W("the forward entry(%v) is invalid", f)
-			continue
-		}
-		err = server.AddForward(network, local, name, remote, limit)
+		err := server.AddUriForward(f)
 		if err != nil {
 			log.W("add forward by entry(%v) fail with %v", f, err)
 			continue

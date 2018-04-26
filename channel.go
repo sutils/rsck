@@ -3,7 +3,9 @@ package rsck
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
+	"net/url"
 	"regexp"
 	"sort"
 	"sync"
@@ -26,24 +28,56 @@ var ChannelByteData = []byte{30}
 
 var ChannelByteClose = []byte{40}
 
+type Forward struct {
+	Name   string
+	Local  *url.URL
+	Remote *url.URL
+}
+
+func NewForward(uri string) (forward *Forward, err error) {
+	parts := regexp.MustCompile("[<>]").Split(uri, 3)
+	if len(parts) != 3 {
+		err = fmt.Errorf("invalid uri:%v", uri)
+		return
+	}
+	forward = &Forward{}
+	forward.Name = parts[1]
+	forward.Local, err = url.Parse(parts[0])
+	if err == nil {
+		forward.Remote, err = url.Parse(parts[2])
+	}
+	return
+}
+
+func (f *Forward) LocalValidF(format string, args ...interface{}) error {
+	return util.ValidAttrF(format, f.Local.Query().Get, true, args...)
+}
+
+func (f *Forward) RemoteValidF(format string, args ...interface{}) error {
+	return util.ValidAttrF(format, f.Remote.Query().Get, true, args...)
+}
+
+func (f *Forward) String() string {
+	return fmt.Sprintf("%v<%v>%v", f.Local, f.Name, f.Remote)
+}
+
 type ForwardListener struct {
-	l                            net.Listener
-	Network, Local, Name, Remote string
-	Limit                        int
+	*Forward
+	L net.Listener
 }
 
 func (f *ForwardListener) String() string {
-	return fmt.Sprintf("%v://%v>%v://%v?limit=%v", f.Network, f.Local, f.Name, f.Remote, f.Limit)
+	return fmt.Sprintf("%v", f.Forward)
 }
 
 type Channel struct {
 	Name   string
 	Online bool
-	FS     []*ForwardListener
+	FS     []*Forward
 	Remote string
 }
 
-type fls []*ForwardListener
+type fls []*Forward
 
 func (f fls) Len() int {
 	return len(f)
@@ -51,7 +85,7 @@ func (f fls) Len() int {
 
 func (f fls) Less(i, j int) bool {
 	if f[i].Name == f[j].Name {
-		return f[i].Local < f[j].Local
+		return f[i].Local.String() < f[j].Local.String()
 	}
 	return f[i].Name < f[j].Name
 }
@@ -104,9 +138,9 @@ func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
 	c.consLck.RLock()
 	c.ListenersLck.RLock()
 	fs = map[string]*Channel{}
-	nameForward := map[string][]*ForwardListener{}
+	nameForward := map[string][]*Forward{}
 	for _, f := range c.Listeners {
-		nameForward[f.Name] = append(nameForward[f.Name], f)
+		nameForward[f.Name] = append(nameForward[f.Name], f.Forward)
 	}
 	for name, nfs := range nameForward {
 		sort.Sort(fls(nfs))
@@ -138,7 +172,7 @@ func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
 	return
 }
 
-func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error) {
+func (c *ChannelServer) Dail(raw net.Conn, name string, remote *url.URL) (err error) {
 	c.consLck.RLock()
 	defer c.consLck.RUnlock()
 	con := c.cons[name]
@@ -147,11 +181,10 @@ func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error
 		return
 	}
 	cid := atomic.AddUint32(&c.sequence, 1)
-	log.D("ChannelServer start dail to %v/%v/%v by cid(%v)", name, network, uri, cid)
+	log.D("ChannelServer start dail to <%v>%v by cid(%v)", name, remote, cid)
 	_, err = con.Writev2([]byte{ChannelByteDail[0]}, util.Map{
-		"cid":     cid,
-		"network": network,
-		"uri":     uri,
+		"cid": cid,
+		"uri": remote.String(),
 	})
 	if err == nil {
 		c.rawConsLck.Lock()
@@ -161,56 +194,67 @@ func (c *ChannelServer) Dail(raw net.Conn, name, network, uri string) (err error
 	return
 }
 
-func (c *ChannelServer) AddForward(network, local, name, remote string, limit int) (err error) {
-	l, err := net.Listen(network, local)
-	if err != nil {
-		log.W("ChannelServer add forward by %v://%v>%v://%v?limit=%v fail with %v", network, local, name, remote, limit, err)
-		return
+func (c *ChannelServer) AddUriForward(uri string) (err error) {
+	forward, err := NewForward(uri)
+	if err == nil {
+		err = c.AddForward(forward)
 	}
-	c.ListenersLck.Lock()
-	c.Listeners[network+"/"+local] = &ForwardListener{
-		l:       l,
-		Network: network,
-		Local:   local,
-		Name:    name,
-		Remote:  remote,
-		Limit:   limit,
-	}
-	c.ListenersLck.Unlock()
-	go c.runForward(l, name, network, remote, limit)
-	log.D("ChannelServer add forward by %v://%v>%v://%v?limit=%v success", network, local, name, remote, limit)
 	return
 }
 
-func (c *ChannelServer) RemoveForward(network, local string) {
-	log.D("ChannelServer removing forward by %v://%v success", network, local)
+func (c *ChannelServer) AddForward(forward *Forward) (err error) {
+	l, err := net.Listen(forward.Local.Scheme, forward.Local.Host)
+	if err != nil {
+		log.W("ChannelServer add forward by %v fail with %v", forward, err)
+		return
+	}
 	c.ListenersLck.Lock()
-	listener := c.Listeners[network+"/"+local]
-	delete(c.Listeners, network+"/"+local)
+	forwardListener := &ForwardListener{
+		L:       l,
+		Forward: forward,
+	}
+	c.Listeners[forward.Local.String()] = forwardListener
+	c.ListenersLck.Unlock()
+	go c.runForward(forwardListener)
+	log.D("ChannelServer add forward by %v success", forward)
+	return
+}
+
+func (c *ChannelServer) RemoveForward(local string) {
+	log.D("ChannelServer removing forward by %v success", local)
+	c.ListenersLck.Lock()
+	listener := c.Listeners[local]
+	delete(c.Listeners, local)
 	c.ListenersLck.Unlock()
 	if listener != nil {
-		listener.l.Close()
+		listener.L.Close()
 	}
 }
 
-func (c *ChannelServer) runForward(listener net.Listener, name, network, remote string, limit int) {
+func (c *ChannelServer) runForward(forward *ForwardListener) {
+	var limit int
+	err := forward.LocalValidF(`limit,O|I,R:-1`, &limit)
+	if err != nil {
+		log.W("ChannelServer forward listener(%v) get the limit valid fail with %v", forward, err)
+	}
 	for {
-		raw, err := listener.Accept()
+		raw, err := forward.L.Accept()
 		if err != nil {
-			log.D("ChannelServer forward listener(%v/%v/%v) accept fail with %v", listener.Addr(), name, remote, err)
+			log.D("ChannelServer forward listener(%v) accept fail with %v", forward, err)
 			break
 		}
-		log.D("ChannelServer forward listener(%v/%v/%v) accept from %v", listener.Addr(), name, remote, raw.RemoteAddr())
-		err = c.Dail(raw, name, network, remote)
+		log.D("ChannelServer forward listener(%v) accept from %v", forward, raw.RemoteAddr())
+		err = c.Dail(raw, forward.Name, forward.Remote)
 		if err != nil {
-			log.W("ChannelServer forward listener(%v/%v/%v) dail fail with %v", listener.Addr(), name, remote, err)
+			log.W("ChannelServer forward listener(%v) dail fail with %v", forward, err)
 			raw.Close()
 			continue
 		}
+
 		if limit > 0 {
 			limit--
 			if limit < 1 {
-				listener.Close()
+				forward.L.Close()
 			}
 		}
 	}
@@ -266,20 +310,19 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 	var args = util.Map{}
 	con.V(&args)
 	var cid uint32
-	var uri, network, errmsg string
+	var uri, errmsg string
 	err := args.ValidF(`
 		cid,R|I,R:0;
 		uri,R|S,L:0;
-		network,R|S,L:0;
 		error,R|S,L:0;
-		`, &cid, &uri, &network, &errmsg)
+		`, &cid, &uri, &errmsg)
 	if err != nil {
 		log.E("ChannelServer do dail back fail with parse argument error:%v", err)
 		con.Close()
 		return -1
 	}
 	if errmsg != "NONE" {
-		log.W("ChannelServer dail to %v/%v/%v fail with error:%v", con.Kvs().StrVal("name"), network, uri, errmsg)
+		log.W("ChannelServer dail to %v/%v fail with error:%v", con.Kvs().StrVal("name"), uri, errmsg)
 		c.rawConsLck.Lock()
 		raw := c.rawCons[cid]
 		if raw != nil {
@@ -406,8 +449,9 @@ type ChannelRunner struct {
 	obdh       *impl.OBDH
 	Name       string
 	Token      string
-	rawCons    map[uint32]net.Conn
+	rawCons    map[uint32]io.ReadWriteCloser
 	rawConsLck sync.RWMutex
+	Dailers    []Dailer
 }
 
 func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
@@ -415,7 +459,7 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 		Name:       name,
 		Token:      token,
 		obdh:       impl.NewOBDH(),
-		rawCons:    map[uint32]net.Conn{},
+		rawCons:    map[uint32]io.ReadWriteCloser{},
 		rawConsLck: sync.RWMutex{},
 	}
 	runner.R = netw.NewNConRunnerN(pool.BP, addr, runner.obdh, impl.Json_NewCon)
@@ -428,6 +472,10 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 	return
 }
 
+func (c *ChannelRunner) AddDailer(dailer Dailer) {
+	c.Dailers = append(c.Dailers, dailer)
+}
+
 func (c *ChannelRunner) Start() {
 	c.R.StartRunner()
 }
@@ -436,12 +484,11 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 	var args = util.Map{}
 	con.V(&args)
 	var cid uint32
-	var uri, network string = "", "tcp"
+	var uri string = ""
 	err := args.ValidF(`
 		cid,R|I,R:0;
 		uri,R|S,L:0;
-		network,O|S,L:0;
-		`, &cid, &uri, &network)
+		`, &cid, &uri)
 	if err != nil {
 		log.E("ChannelRunner on dail fail with %v", err)
 		con.Writev(util.Map{
@@ -449,14 +496,21 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 		})
 		return -1
 	}
-	rawCon, err := net.Dial(network, uri)
+	var rawCon io.ReadWriteCloser
+	err = fmt.Errorf("not matched dailer for %v", uri)
+	for _, dailer := range c.Dailers {
+		if dailer.Matched(uri) {
+			log.D("ChannelRunner will use %v to dail by %v", dailer, uri)
+			rawCon, err = dailer.Dail(cid, uri)
+			break
+		}
+	}
 	if err != nil {
 		log.E("ChannelRunner dail to %v fail with %v", uri, err)
 		con.Writev(util.Map{
-			"cid":     cid,
-			"uri":     uri,
-			"network": network,
-			"error":   err.Error(),
+			"cid":   cid,
+			"uri":   uri,
+			"error": err.Error(),
 		})
 		return -1
 	}
@@ -465,12 +519,11 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 	go c.readRawCon(cid, rawCon)
 	c.rawConsLck.Unlock()
 	con.Writev(util.Map{
-		"cid":     cid,
-		"uri":     uri,
-		"network": network,
-		"error":   "NONE",
+		"cid":   cid,
+		"uri":   uri,
+		"error": "NONE",
 	})
-	log.D("ChannelRunner dail to %v/%v success", network, uri)
+	log.D("ChannelRunner dail to %v success", uri)
 	return 0
 }
 
@@ -490,11 +543,14 @@ func (c *ChannelRunner) OnDataF(con netw.Cmd) int {
 		})
 		return 0
 	}
-	rawCon.Write(buf[4:])
+	_, err := rawCon.Write(buf[4:])
+	if err != nil {
+		log.D("ChannelRunner send data to raw(%v) fail with %v", cid, err)
+	}
 	return 0
 }
 
-func (c *ChannelRunner) readRawCon(cid uint32, raw net.Conn) {
+func (c *ChannelRunner) readRawCon(cid uint32, raw io.ReadWriteCloser) {
 	var buf []byte
 	if netw.MOD_MAX_SIZE == 4 {
 		buf = make([]byte, 1024*1024*2)

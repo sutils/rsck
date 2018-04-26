@@ -14,8 +14,8 @@ import (
 func TestChannel(t *testing.T) {
 	netw.MOD_MAX_SIZE = 4
 	// MOD_MAX_SIZE = 4
-	netw.ShowLog = true
-	netw.ShowLog_C = true
+	// netw.ShowLog = true
+	// netw.ShowLog_C = true
 	server := NewChannelServer(":2832", "Server")
 	server.ACL["^[ax.*$"] = "abc"
 	server.ACL["^test.*$"] = "abc"
@@ -25,6 +25,7 @@ func TestChannel(t *testing.T) {
 		return
 	}
 	runner := NewChannelRunner("localhost:2832", "test0", "abc")
+	runner.AddDailer(NewTCPDailer())
 	runner.Start()
 	time.Sleep(time.Second)
 	//
@@ -35,12 +36,12 @@ func TestChannel(t *testing.T) {
 	}
 	echo.Start()
 	//
-	err = server.AddForward("tcp", ":2831", "test0", "localhost:2833", 0)
+	err = server.AddUriForward("tcp://:2831<test0>tcp://localhost:2833")
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	err = server.AddForward("tcp", ":2830", "test0", "localhost:2834", 0)
+	err = server.AddUriForward("tcp://:2830<test0>tcp://localhost:2834")
 	if err != nil {
 		t.Error(err)
 		return
