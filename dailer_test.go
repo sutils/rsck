@@ -32,7 +32,7 @@ func TestWebDailer(t *testing.T) {
 		return
 	}
 	dailer := NewWebDailer()
-	dailer.Start()
+	dailer.Bootstrap()
 	go func() {
 		var cid uint32
 		for {

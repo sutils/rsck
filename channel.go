@@ -472,8 +472,14 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 	return
 }
 
-func (c *ChannelRunner) AddDailer(dailer Dailer) {
+func (c *ChannelRunner) AddDailer(dailer Dailer) error {
+	err := dailer.Bootstrap()
+	if err != nil {
+		log.E("ChannelRunner bootstrap dailer fail with %v", err)
+		return err
+	}
 	c.Dailers = append(c.Dailers, dailer)
+	return nil
 }
 
 func (c *ChannelRunner) Start() {

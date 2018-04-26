@@ -38,6 +38,7 @@ func (c *CombinedReadWriterCloser) Close() (err error) {
 }
 
 type Dailer interface {
+	Bootstrap() error
 	Matched(uri string) bool
 	Dail(cid uint32, uri string) (r io.ReadWriteCloser, err error)
 }
@@ -47,6 +48,10 @@ type TCPDailer struct {
 
 func NewTCPDailer() *TCPDailer {
 	return &TCPDailer{}
+}
+
+func (t *TCPDailer) Bootstrap() error {
+	return nil
 }
 
 func (t *TCPDailer) Matched(uri string) bool {
@@ -96,6 +101,10 @@ type CmdDailer struct {
 
 func NewCmdDailer() *CmdDailer {
 	return &CmdDailer{}
+}
+
+func (c *CmdDailer) Bootstrap() error {
+	return nil
 }
 
 func (c *CmdDailer) Matched(uri string) bool {
@@ -166,7 +175,7 @@ func NewWebDailer() (dailer *WebDailer) {
 	return
 }
 
-func (web *WebDailer) Start() error {
+func (web *WebDailer) Bootstrap() error {
 	go http.Serve(web, web)
 	return nil
 }
