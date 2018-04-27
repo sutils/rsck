@@ -16,6 +16,8 @@ import (
 
 	"github.com/Centny/gwf/log"
 	"golang.org/x/net/webdav"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 type CombinedReadWriterCloser struct {
@@ -138,16 +140,27 @@ func (c *CmdDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err er
 		stdin.Close()
 		return cmd.Process.Kill()
 	}
-	raw = &CombinedReadWriterCloser{
-		Closer: closer,
-		Reader: retReader,
-		Writer: &CmdStdinWriter{
-			Closer:   closer,
-			Writer:   stdin,
-			Replace:  []byte("\r"),
-			CloseTag: []byte{255, 244, 255, 253, 6},
-		},
+	cmdWriter := &CmdStdinWriter{
+		Closer:   closer,
+		Replace:  []byte("\r"),
+		CloseTag: []byte{255, 244, 255, 253, 6},
 	}
+	combined := &CombinedReadWriterCloser{
+		Closer: closer,
+		Writer: cmdWriter,
+	}
+	switch remote.Query().Get("LC") {
+	case "zh_CN.GBK":
+		combined.Reader = transform.NewReader(retReader, simplifiedchinese.GBK.NewDecoder())
+		cmdWriter.Writer = transform.NewWriter(stdin, simplifiedchinese.GBK.NewEncoder())
+	case "zh_CN.GB18030":
+		combined.Reader = transform.NewReader(retReader, simplifiedchinese.GB18030.NewDecoder())
+		cmdWriter.Writer = transform.NewWriter(stdin, simplifiedchinese.GB18030.NewEncoder())
+	default:
+		combined.Reader = retReader
+		cmdWriter.Writer = stdin
+	}
+	raw = combined
 	err = cmd.Start()
 	return
 }
