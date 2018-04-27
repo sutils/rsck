@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Centny/gwf/netw/impl"
 	"github.com/Centny/gwf/pool"
 	"github.com/Centny/gwf/util"
 
@@ -33,6 +34,8 @@ func (a *ArrayFlags) Set(value string) error {
 	*a = append(*a, value)
 	return nil
 }
+
+var showlog = flag.Int("showlog", 0, "show debug log")
 
 var runServer = flag.Bool("s", false, "start as reverse channel server")
 var listenAddr = flag.String("l", ":8241", "reverse/echo server listent address")
@@ -92,9 +95,9 @@ func startRunner() {
 		os.Exit(1)
 		return
 	}
-	// netw.ShowLog = true
-	// netw.ShowLog_C = true
-	// impl.ShowLog = true
+	netw.ShowLog = *showlog > 0
+	netw.ShowLog_C = *showlog > 2
+	impl.ShowLog = *showlog > 1
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	runner := rsck.NewChannelRunner(*server, *name, *token)
@@ -237,6 +240,9 @@ func startServer() {
 		os.Exit(1)
 		return
 	}
+	netw.ShowLog = *showlog > 0
+	netw.ShowLog_C = *showlog > 2
+	impl.ShowLog = *showlog > 1
 	os.MkdirAll(*workspace, os.ModePerm)
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
