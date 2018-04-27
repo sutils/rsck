@@ -5,7 +5,7 @@ del /Q /S build
 mkdir build
 mkdir build\%srv_name%
 go build -o build\rsck\rsck.exe github.com/sutils/rsck/rsck
-reg Query "HKLM\Hardware\Description\System\CentralProcessor\0" | find /i "x86" > NUL && set OS=x86 || set OS=x64
+reg Query "HKLM\Hardware\Description\System\CentralProcessor\0" | find /i "x86" > NUL && set OS=x86||set OS=x64
 xcopy win-%OS%\nssm.exe build\%srv_name%
 xcopy configure.bat build\%srv_name%
 xcopy install.bat build\%srv_name%
