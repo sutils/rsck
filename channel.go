@@ -10,6 +10,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Centny/gwf/log"
 	"github.com/Centny/gwf/netw"
@@ -18,7 +19,7 @@ import (
 	"github.com/Centny/gwf/util"
 )
 
-var ChannelByteTick = []byte{0}
+var ChannelByteHeartbeat = []byte{0}
 
 var ChannelByteLogin = []byte{10}
 
@@ -99,6 +100,8 @@ type ChannelServer struct {
 	obdh         *impl.OBDH
 	cons         map[string]netw.Con
 	consLck      sync.RWMutex
+	hbs          map[string]int64
+	hbsLck       sync.RWMutex
 	ACL          map[string]string
 	aclLck       sync.RWMutex
 	sequence     uint32
@@ -106,6 +109,8 @@ type ChannelServer struct {
 	rawConsLck   sync.RWMutex
 	Listeners    map[string]*ForwardListener
 	ListenersLck sync.RWMutex
+	HbDelay      int64
+	running      bool
 }
 
 func NewChannelServer(port string, n string) (server *ChannelServer) {
@@ -113,12 +118,15 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 		obdh:         impl.NewOBDH(),
 		cons:         map[string]netw.Con{},
 		consLck:      sync.RWMutex{},
+		hbs:          map[string]int64{},
+		hbsLck:       sync.RWMutex{},
 		ACL:          map[string]string{},
 		aclLck:       sync.RWMutex{},
 		rawCons:      map[uint32]net.Conn{},
 		rawConsLck:   sync.RWMutex{},
 		Listeners:    map[string]*ForwardListener{},
 		ListenersLck: sync.RWMutex{},
+		HbDelay:      10000,
 	}
 	server.L = netw.NewListenerN(pool.BP, port, n, netw.NewCCH(server, server.obdh), impl.Json_NewCon)
 	// server.L.Runner_ = &netw.LenRunner{}
@@ -126,12 +134,48 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 	server.obdh.AddF(ChannelByteDail[0], server.OnDailBackF)
 	server.obdh.AddF(ChannelByteData[0], server.OnDataF)
 	server.obdh.AddF(ChannelByteClose[0], server.OnRawCloseF)
-	server.obdh.AddH(ChannelByteTick[0], netw.NewDoNotH())
+	server.obdh.AddF(ChannelByteHeartbeat[0], server.OnHeartbeatF)
 	return server
 }
 
 func (c *ChannelServer) Start() error {
-	return c.L.Run()
+	err := c.L.Run()
+	if err == nil {
+		c.running = true
+		go c.loopHb()
+	}
+	return err
+}
+
+func (c *ChannelServer) Close() {
+	c.L.Close()
+}
+
+func (c *ChannelServer) loopHb() {
+	log.D("ChannelServer start heartbeat by delay(%vms)", c.HbDelay)
+	for c.running {
+		c.consLck.Lock()
+		c.hbsLck.Lock()
+		now := util.Now()
+		for name, con := range c.cons {
+			if last, ok := c.hbs[name]; ok && now-last < c.HbDelay {
+				continue
+			}
+			log.D("ChannelServer check %v heartbeat is timeout, will close it", name)
+			con.Close()
+		}
+		c.hbsLck.Unlock()
+		c.consLck.Unlock()
+		time.Sleep(time.Duration(c.HbDelay) * time.Millisecond)
+	}
+}
+
+func (c *ChannelServer) OnHeartbeatF(con netw.Cmd) int {
+	name := con.Kvs().StrVal("name")
+	c.hbsLck.Lock()
+	c.hbs[name] = util.Now()
+	c.hbsLck.Unlock()
+	return 0
 }
 
 func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
@@ -292,6 +336,9 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 		con.Close()
 		return -1
 	}
+	c.hbsLck.Lock()
+	c.hbs[name] = util.Now()
+	c.hbsLck.Unlock()
 	c.consLck.Lock()
 	if having, ok := c.cons[name]; ok {
 		log.W("ChannelServer login with having name(%v) connection, will close it", name)
@@ -439,8 +486,13 @@ func (c *ChannelServer) OnClose(con netw.Con) {
 	c.consLck.Lock()
 	if c.cons[name] == con {
 		delete(c.cons, name)
+		c.consLck.Unlock()
+		c.hbsLck.Lock()
+		delete(c.hbs, name)
+		c.hbsLck.Unlock()
+	} else {
+		c.consLck.Unlock()
 	}
-	c.consLck.Unlock()
 	log.D("ChannelRunner channel(%v) from %v is closed", name, con.RemoteAddr())
 }
 
@@ -465,10 +517,12 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 	runner.R = netw.NewNConRunnerN(pool.BP, addr, runner.obdh, impl.Json_NewCon)
 	// runner.R.Runner_ = &netw.LenRunner{}
 	runner.R.ConH = runner
-	runner.R.TickData = append(ChannelByteTick, []byte("RsckTick\n")...)
+	runner.R.TickData = append(ChannelByteHeartbeat, []byte("ClientTick\n")...)
+	runner.R.Tick = 3000
 	runner.obdh.AddF(ChannelByteDail[0], runner.OnDailF)
 	runner.obdh.AddF(ChannelByteData[0], runner.OnDataF)
 	runner.obdh.AddF(ChannelByteClose[0], runner.OnRawCloseF)
+	runner.obdh.AddH(ChannelByteHeartbeat[0], netw.NewDoNotH())
 	return
 }
 
@@ -552,6 +606,7 @@ func (c *ChannelRunner) OnDataF(con netw.Cmd) int {
 	_, err := rawCon.Write(buf[4:])
 	if err != nil {
 		log.D("ChannelRunner send data to raw(%v) fail with %v", cid, err)
+		rawCon.Close()
 	}
 	return 0
 }
@@ -584,6 +639,7 @@ func (c *ChannelRunner) readRawCon(cid uint32, raw io.ReadWriteCloser) {
 	c.R.Writev2(ChannelByteClose, util.Map{
 		"cid": cid,
 	})
+	log.D("ChannelRunner %v raw conn reader is done", cid)
 }
 
 func (c *ChannelRunner) OnRawCloseF(con netw.Cmd) int {

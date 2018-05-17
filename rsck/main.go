@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/user"
 	"sort"
@@ -95,9 +97,10 @@ func startRunner() {
 		os.Exit(1)
 		return
 	}
-	netw.ShowLog = *showlog > 0
-	netw.ShowLog_C = *showlog > 2
-	impl.ShowLog = *showlog > 1
+	netw.ShowLog = *showlog > 1
+	netw.ShowLog_C = *showlog > 3
+	impl.ShowLog = *showlog > 2
+	rsck.ShowLog = *showlog
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	runner := rsck.NewChannelRunner(*server, *name, *token)
@@ -105,6 +108,7 @@ func startRunner() {
 	runner.AddDailer(rsck.NewWebDailer())
 	runner.AddDailer(rsck.NewTCPDailer())
 	runner.Start()
+	go http.ListenAndServe(":2332", nil)
 	make(chan int) <- 0
 }
 
@@ -240,9 +244,10 @@ func startServer() {
 		os.Exit(1)
 		return
 	}
-	netw.ShowLog = *showlog > 0
-	netw.ShowLog_C = *showlog > 2
-	impl.ShowLog = *showlog > 1
+	netw.ShowLog = *showlog > 1
+	netw.ShowLog_C = *showlog > 3
+	impl.ShowLog = *showlog > 2
+	rsck.ShowLog = *showlog
 	os.MkdirAll(*workspace, os.ModePerm)
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)

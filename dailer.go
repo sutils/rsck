@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Centny/gwf/log"
@@ -24,14 +25,12 @@ type CombinedReadWriterCloser struct {
 	io.Reader
 	io.Writer
 	Closer func() error
+	closed uint32
 }
 
 func (c *CombinedReadWriterCloser) Close() (err error) {
-	if r, ok := c.Reader.(io.Closer); ok {
-		err = r.Close()
-	}
-	if r, ok := c.Writer.(io.Closer); ok {
-		err = r.Close()
+	if !atomic.CompareAndSwapUint32(&c.closed, 0, 1) {
+		return fmt.Errorf("closed")
 	}
 	if c.Closer != nil {
 		err = c.Closer()
@@ -74,17 +73,15 @@ func (t *TCPDailer) String() string {
 }
 
 type CmdStdinWriter struct {
-	Closer func() error
 	io.Writer
 	Replace  []byte
 	CloseTag []byte
 }
 
 func (c *CmdStdinWriter) Write(p []byte) (n int, err error) {
-	if c.Closer != nil && len(c.CloseTag) > 0 {
+	if len(c.CloseTag) > 0 {
 		newp := bytes.Replace(p, c.CloseTag, []byte{}, -1)
 		if len(newp) != len(p) {
-			c.Closer()
 			err = fmt.Errorf("closed")
 			return 0, err
 		}
@@ -134,34 +131,40 @@ func (c *CmdDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err er
 	stdin, _ := cmd.StdinPipe()
 	cmd.Stdout = stdWriter
 	cmd.Stderr = stdWriter
-	closer := func() error {
-		log.D("CmdDailer will kill the cmd(%v)", cid)
-		retReader.Close()
-		stdin.Close()
-		return cmd.Process.Kill()
-	}
 	cmdWriter := &CmdStdinWriter{
-		Closer:   closer,
+		Writer:   stdin,
 		Replace:  []byte("\r"),
 		CloseTag: []byte{255, 244, 255, 253, 6},
 	}
 	combined := &CombinedReadWriterCloser{
-		Closer: closer,
 		Writer: cmdWriter,
+		Reader: retReader,
+		Closer: func() error {
+			log.D("CmdDailer will kill the cmd(%v)", cid)
+			stdWriter.Close()
+			stdin.Close()
+			cmd.Process.Kill()
+			return nil
+		},
 	}
+	//
 	switch remote.Query().Get("LC") {
 	case "zh_CN.GBK":
-		combined.Reader = transform.NewReader(retReader, simplifiedchinese.GBK.NewDecoder())
-		cmdWriter.Writer = transform.NewWriter(stdin, simplifiedchinese.GBK.NewEncoder())
+		combined.Reader = transform.NewReader(combined.Reader, simplifiedchinese.GBK.NewDecoder())
+		cmdWriter.Writer = transform.NewWriter(cmdWriter.Writer, simplifiedchinese.GBK.NewEncoder())
 	case "zh_CN.GB18030":
-		combined.Reader = transform.NewReader(retReader, simplifiedchinese.GB18030.NewDecoder())
-		cmdWriter.Writer = transform.NewWriter(stdin, simplifiedchinese.GB18030.NewEncoder())
+		combined.Reader = transform.NewReader(combined.Reader, simplifiedchinese.GB18030.NewDecoder())
+		cmdWriter.Writer = transform.NewWriter(cmdWriter.Writer, simplifiedchinese.GB18030.NewEncoder())
 	default:
-		combined.Reader = retReader
-		cmdWriter.Writer = stdin
 	}
 	raw = combined
 	err = cmd.Start()
+	if err == nil {
+		go func() {
+			cmd.Wait()
+			combined.Close()
+		}()
+	}
 	return
 }
 

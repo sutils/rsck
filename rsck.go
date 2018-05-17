@@ -12,7 +12,7 @@ import (
 var ShowLog int
 
 func log_d(f string, args ...interface{}) {
-	if ShowLog > 0 {
+	if ShowLog > 1 {
 		log.D_(1, f, args...)
 	}
 }
