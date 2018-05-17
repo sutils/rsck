@@ -1,6 +1,6 @@
 @echo off
 set srv_name=rsck
-set srv_ver=1.2.0
+set srv_ver=1.3.0
 del /Q /S build\%srv_name%
 mkdir build
 mkdir build\%srv_name%
