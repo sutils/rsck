@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -38,6 +41,8 @@ func (a *ArrayFlags) Set(value string) error {
 }
 
 var showlog = flag.Int("showlog", 0, "show debug log")
+var cert = flag.String("cert", "", "the tls cert file")
+var key = flag.String("key", "", "the tls cert key")
 
 var runServer = flag.Bool("s", false, "start as reverse channel server")
 var listenAddr = flag.String("l", ":8241", "reverse/echo server listent address")
@@ -107,6 +112,20 @@ func startRunner() {
 	runner.AddDailer(rsck.NewCmdDailer())
 	runner.AddDailer(rsck.NewWebDailer())
 	runner.AddDailer(rsck.NewTCPDailer())
+	if len(*cert) > 0 {
+		log.D("runner load x509 cert:%v,key:%v", *cert, *key)
+		cert, err := tls.LoadX509KeyPair(*cert, *key)
+		if err != nil {
+			log.E("runner load cert fail with %v", err)
+			os.Exit(1)
+			return
+		}
+		config := &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true}
+		runner.R.DailAddr = func(addr string) (raw net.Conn, err error) {
+			raw, err = tls.Dial("tcp", addr, config)
+			return
+		}
+	}
 	runner.Start()
 	go http.ListenAndServe(":2332", nil)
 	make(chan int) <- 0
@@ -251,7 +270,23 @@ func startServer() {
 	os.MkdirAll(*workspace, os.ModePerm)
 	netw.MOD_MAX_SIZE = 4
 	pool.SetBytePoolMax(1024 * 1024 * 4)
-	server := rsck.NewChannelServer(*listenAddr, "Reverse Server")
+	server := rsck.NewChannelServer(*listenAddr, "Srv")
+	server.L.Name = "Reverse Server"
+	if len(*cert) > 0 {
+		log.D("server load x509 cert:%v,key:%v", *cert, *key)
+		cert, err := tls.LoadX509KeyPair(*cert, *key)
+		if err != nil {
+			log.E("server load cert fail with %v", err)
+			os.Exit(1)
+			return
+		}
+		config := &tls.Config{Certificates: []tls.Certificate{cert}}
+		config.Rand = rand.Reader
+		server.L.NewListenerF = func(l *netw.Listener) (raw net.Listener, err error) {
+			raw, err = tls.Listen("tcp", l.Port, config)
+			return
+		}
+	}
 	//
 	routing.HFilterFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
 		username, password, ok := hs.R.BasicAuth()

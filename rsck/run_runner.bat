@@ -1,1 +1,1 @@
-go run main.go -r -server 10.211.55.2:8241 -name abc -token 123 -showlog=1
+go run main.go -r -cert=certs/client.pem -key=certs/client.key -server 10.211.55.2:8241 -name abc -token 123 -showlog=1
