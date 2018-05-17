@@ -7,15 +7,15 @@ export cpwd=`pwd`
 export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
 export PATH=$PATH:$GOPATH/bin:$HOME/bin:$GOROOT/bin
 output=build
-rm -rf $output
-mkdir -p $output
 
 #### Package ####
 srv_name=rsck
-srv_ver=1.1.0
+srv_ver=1.2.0
 ##
 srv_deamon="$srv_name"d
 srv_out=$output/$srv_name
+
+rm -rf $srv_out
 mkdir $srv_out
 ##build normal
 echo "Build $srv_name normal executor..."

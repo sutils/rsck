@@ -1,7 +1,7 @@
 @echo off
 set srv_name=rsck
-set srv_ver=1.1.0
-del /Q /S build
+set srv_ver=1.2.0
+del /Q /S build\%srv_name%
 mkdir build
 mkdir build\%srv_name%
 go build -o build\rsck\rsck.exe github.com/sutils/rsck/rsck
@@ -11,7 +11,7 @@ xcopy configure.bat build\%srv_name%
 xcopy install.bat build\%srv_name%
 xcopy uninstall.bat build\%srv_name%
 cd build
-zip -r %srv_name%-%srv_ver%-Win-%OS%.zip %srv_name%
+7z a -r %srv_name%-%srv_ver%-Win-%OS%.zip %srv_name%
 cd ..\
 goto :esuccess
 
