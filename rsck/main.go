@@ -230,7 +230,10 @@ var HTML = `
         <tr class="noneborder" style="height:20px;text-align:left;">
             <td class="noneborder">{{$f}}</td>
             <td class="noneborder">
-                <a style="margin-left:10px;" href="add?forwards={{$f}}">Add</a>
+                <a style="margin-left:10px;font-size:20px;text-decoration:none;font-weight:bold;" href="add?forwards={{$f}}">+</a>
+			</td>
+			<td class="noneborder">
+                <a style="margin-left:10px;font-size:20px;text-decoration:none;font-weight:bold;" href="removeRecent?forwards={{$f}}">-</a>
             </td>
         </tr>
         {{end}}
@@ -265,6 +268,26 @@ func writeRecent(recent map[string]int) {
 	if err != nil {
 		log.W("save recent to %v fail with %v", *workspace+"/recent.json", err)
 		return
+	}
+}
+
+type RecentLess string
+
+func (m RecentLess) Less(a, b interface{}, desc bool) bool {
+	aval := util.MapVal(a).IntVal("used")
+	bval := util.MapVal(b).IntVal("used")
+	if aval == bval {
+		if desc {
+			return util.MapVal(a).StrVal("forward") > util.MapVal(b).StrVal("forward")
+		} else {
+			return util.MapVal(a).StrVal("forward") < util.MapVal(b).StrVal("forward")
+		}
+	} else {
+		if desc {
+			return aval > bval
+		} else {
+			return aval < bval
+		}
 	}
 }
 
@@ -348,6 +371,13 @@ func startServer() {
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
+	routing.HFunc("^/removeRecent(\\?.*)?$", func(hs *routing.HTTPSession) routing.HResult {
+		oldRecent := readRecent()
+		delete(oldRecent, hs.RVal("forwards"))
+		writeRecent(oldRecent)
+		hs.Redirect("/")
+		return routing.HRES_RETURN
+	})
 	// routing.HFunc("^/web.*$", server.ListWebForward)
 	tpl, _ := template.New("n").Parse(HTML)
 	routing.HFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
@@ -372,11 +402,11 @@ func startServer() {
 				continue
 			}
 			recents = append(recents, util.Map{
-				"forward": oldForward,
+				"forward": f,
 				"used":    c,
 			})
 		}
-		sorter := util.NewMapIntSorter("used", recents)
+		sorter := util.NewSorter(RecentLess(""), recents)
 		sorter.Desc = true
 		sort.Sort(sorter)
 		err := tpl.Execute(hs.W, map[string]interface{}{
