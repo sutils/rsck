@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -45,10 +46,13 @@ type Dailer interface {
 }
 
 type TCPDailer struct {
+	portMatcher *regexp.Regexp
 }
 
 func NewTCPDailer() *TCPDailer {
-	return &TCPDailer{}
+	return &TCPDailer{
+		portMatcher: regexp.MustCompile("^.*:[0-9]+$"),
+	}
 }
 
 func (t *TCPDailer) Bootstrap() error {
@@ -67,12 +71,12 @@ func (t *TCPDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err er
 		switch network {
 		case "http":
 			network = "tcp"
-			if !strings.HasSuffix(host, ":80") {
+			if !t.portMatcher.MatchString(uri) {
 				host += ":80"
 			}
 		case "https":
 			network = "tcp"
-			if !strings.HasSuffix(host, ":443") {
+			if !t.portMatcher.MatchString(uri) {
 				host += ":443"
 			}
 		}

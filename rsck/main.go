@@ -43,6 +43,8 @@ func (a *ArrayFlags) Set(value string) error {
 var showlog = flag.Int("showlog", 0, "show debug log")
 var cert = flag.String("cert", "", "the tls cert file")
 var key = flag.String("key", "", "the tls cert key")
+var outLog = flag.String("outlog", "", "the out log file")
+var errLog = flag.String("errlog", "", "the err log file")
 
 var runServer = flag.Bool("s", false, "start as reverse channel server")
 var listenAddr = flag.String("l", ":8241", "reverse/echo server listent address")
@@ -52,6 +54,7 @@ var acl ArrayFlags
 var forword ArrayFlags
 var aclFile = flag.String("aclf", "", "the file of reverse access control level(required if not acl)")
 var forwardFile = flag.String("forward", "", "the file of the reverse forward")
+var webSuffix = flag.String("suffix", "", "the host suffix of web forward")
 var workspace *string
 
 var runRunner = flag.Bool("r", false, "start as reverse channel runner")
@@ -102,6 +105,7 @@ func startRunner() {
 		os.Exit(1)
 		return
 	}
+	log.Redirect(*outLog, *errLog)
 	netw.ShowLog = *showlog > 1
 	netw.ShowLog_C = *showlog > 3
 	impl.ShowLog = *showlog > 2
@@ -190,7 +194,8 @@ var HTML = `
                 <th class="boder_1px">Online</th>
                 <th class="boder_1px">Remote</th>
                 <th class="boder_1px">Forward</th>
-            </tr>
+			</tr>
+			{{$webSuffix:=.webSuffix}}
             {{range $k, $v := .ns}} {{$channel := index $.forwards $v}}
             <tr class="boder_1px">
                 <td class="boder_1px">{{$k}}</td>
@@ -207,7 +212,7 @@ var HTML = `
 							</td>
 							<td class="noneborder" style="width:60px;text-align:center;">
 								{{if eq $f.Local.Scheme "web" }}
-								<a href="/web/{{$f.Local.Host}}/">Open</a>
+								<a target="_blank" href="//{{$f.Local.Host}}{{$webSuffix}}">Open</a>
 								{{else}}
 								&nbsp;
 								{{end}}
@@ -269,6 +274,7 @@ func startServer() {
 		os.Exit(1)
 		return
 	}
+	log.Redirect(*outLog, *errLog)
 	netw.ShowLog = *showlog > 1
 	netw.ShowLog_C = *showlog > 3
 	impl.ShowLog = *showlog > 2
@@ -278,6 +284,8 @@ func startServer() {
 	pool.SetBytePoolMax(1024 * 1024 * 4)
 	server := rsck.NewChannelServer(*listenAddr, "Srv")
 	server.L.Name = "Reverse Server"
+	server.WebSuffix = *webSuffix
+	server.WebAuth = *auth
 	if len(*cert) > 0 {
 		log.D("server load x509 cert:%v,key:%v", *cert, *key)
 		cert, err := tls.LoadX509KeyPair(*cert, *key)
@@ -295,14 +303,21 @@ func startServer() {
 	}
 	//
 	routing.HFilterFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
-		username, password, ok := hs.R.BasicAuth()
-		if ok && *auth == fmt.Sprintf("%v:%s", username, password) {
-			return routing.HRES_CONTINUE
+		host := hs.R.Host
+		if len(*webSuffix) > 0 && strings.HasSuffix(host, *webSuffix) {
+			name := strings.Trim(strings.TrimSuffix(host, *webSuffix), ". ")
+			if len(name) > 0 {
+				return server.ProcWebForward(hs)
+			}
 		}
-		hs.W.Header().Set("WWW-Authenticate", "Basic realm=Reverse Server")
-		hs.W.WriteHeader(401)
-		hs.Printf("%v", "401 Unauthorized")
-		return routing.HRES_RETURN
+		username, password, ok := hs.R.BasicAuth()
+		if !(ok && *auth == fmt.Sprintf("%v:%s", username, password)) {
+			hs.W.Header().Set("WWW-Authenticate", "Basic realm=Reverse Server")
+			hs.W.WriteHeader(401)
+			hs.Printf("%v", "401 Unauthorized")
+			return routing.HRES_RETURN
+		}
+		return routing.HRES_CONTINUE
 	})
 	routing.HFunc("^/remove(\\?.*)?$", func(hs *routing.HTTPSession) routing.HResult {
 		var local string
@@ -333,7 +348,7 @@ func startServer() {
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
-	routing.H("^/web.*$", server)
+	// routing.HFunc("^/web.*$", server.ListWebForward)
 	tpl, _ := template.New("n").Parse(HTML)
 	routing.HFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
 		ns, forwards := server.AllForwards()
@@ -365,9 +380,10 @@ func startServer() {
 		sorter.Desc = true
 		sort.Sort(sorter)
 		err := tpl.Execute(hs.W, map[string]interface{}{
-			"ns":       ns,
-			"forwards": forwards,
-			"recents":  recents,
+			"ns":        ns,
+			"forwards":  forwards,
+			"recents":   recents,
+			"webSuffix": *webSuffix,
 		})
 		if err != nil {
 			log.E("Parse html fail with %v", err)

@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
-	"html/template"
 	"io"
 	"net"
 	"net/http"
@@ -120,7 +119,8 @@ type ChannelServer struct {
 	//
 	webForward    map[string]*Forward
 	webForwardLck sync.RWMutex
-	WebPre        string
+	WebSuffix     string
+	WebAuth       string
 }
 
 func NewChannelServer(port string, n string) (server *ChannelServer) {
@@ -139,7 +139,6 @@ func NewChannelServer(port string, n string) (server *ChannelServer) {
 		HbDelay:       10000,
 		webForward:    map[string]*Forward{},
 		webForwardLck: sync.RWMutex{},
-		WebPre:        "/web",
 	}
 	server.L = netw.NewListenerN(pool.BP, port, n, netw.NewCCH(server, server.obdh), impl.Json_NewCon)
 	// server.L.Runner_ = &netw.LenRunner{}
@@ -298,15 +297,36 @@ func (c *ChannelServer) AddForward(forward *Forward) (err error) {
 	return
 }
 
-func (c *ChannelServer) RemoveForward(local string) {
-	log.D("ChannelServer removing forward by %v success", local)
-	c.listenersLck.Lock()
-	listener := c.listeners[local]
-	delete(c.listeners, local)
-	c.listenersLck.Unlock()
-	if listener != nil {
-		listener.L.Close()
+func (c *ChannelServer) RemoveForward(local string) (err error) {
+	rurl, err := url.Parse(local)
+	if err != nil {
+		return
 	}
+	if rurl.Scheme == "web" {
+		c.webForwardLck.Lock()
+		forward := c.webForward[rurl.Host]
+		delete(c.webForward, rurl.Host)
+		c.webForwardLck.Unlock()
+		if forward != nil {
+			log.D("ChannelServer removing web forward by %v success", local)
+		} else {
+			err = fmt.Errorf("web forward is not exist by %v", local)
+			log.D("ChannelServer removing web forward by %v fail with not exists", local)
+		}
+	} else {
+		c.listenersLck.Lock()
+		listener := c.listeners[local]
+		delete(c.listeners, local)
+		c.listenersLck.Unlock()
+		if listener != nil {
+			listener.L.Close()
+			log.D("ChannelServer removing forward by %v success", local)
+		} else {
+			err = fmt.Errorf("forward is not exitst")
+			log.D("ChannelServer removing forward by %v fail with not exists", local)
+		}
+	}
+	return
 }
 
 func (c *ChannelServer) runForward(forward *ForwardListener) {
@@ -338,36 +358,42 @@ func (c *ChannelServer) runForward(forward *ForwardListener) {
 	}
 }
 
-func (c *ChannelServer) SrvHTTP(hs *routing.HTTPSession) routing.HResult {
-	path := strings.TrimPrefix(hs.R.URL.Path, c.WebPre)
-	path = strings.TrimSpace(strings.TrimPrefix(path, "/"))
-	if len(path) < 1 {
-		var fs = fls{}
-		c.webForwardLck.Lock()
-		for _, forward := range c.webForward {
-			fs = append(fs, forward)
-		}
-		c.webForwardLck.Unlock()
-		tmpl, _ := template.New("list").Parse("<pre>\n{{range $v:=.}}<a href=\"{{$v.Local.Host}}\">{{$v}}</a>\n{{end}}</pre>")
-		sort.Sort(fs)
-		hs.W.Header().Set("Content-Type", "text/html;charset=utf-8")
-		tmpl.Execute(hs.W, fs)
-		return routing.HRES_RETURN
-	}
-	pathParts := strings.SplitN(path, "/", 2)
-	if len(pathParts) > 1 {
-		hs.R.URL.Path = "/" + pathParts[1]
-	} else {
-		hs.R.URL.Path = "/"
-	}
+// func (c *ChannelServer) ListWebForward(hs *routing.HTTPSession) routing.HResult {
+// 	var fs = fls{}
+// 	c.webForwardLck.Lock()
+// 	for _, forward := range c.webForward {
+// 		fs = append(fs, forward)
+// 	}
+// 	c.webForwardLck.Unlock()
+// 	tmpl, _ := template.New("list").Parse("<pre>\n{{range $v:=.fs}}<a href=\"{{$v.Local.Host}}{{.suffix}}\">{{$v}}</a>\n{{end}}</pre>")
+// 	sort.Sort(fs)
+// 	hs.W.Header().Set("Content-Type", "text/html;charset=utf-8")
+// 	tmpl.Execute(hs.W, map[string]interface{}{
+// 		"fs":     fs,
+// 		"suffix": c.WebSuffix,
+// 	})
+// 	return routing.HRES_RETURN
+// }
+
+func (c *ChannelServer) ProcWebForward(hs *routing.HTTPSession) routing.HResult {
+	name := strings.Trim(strings.TrimSuffix(hs.R.Host, c.WebSuffix), ". ")
 	c.webForwardLck.Lock()
-	forward := c.webForward[pathParts[0]]
+	forward := c.webForward[name]
 	c.webForwardLck.Unlock()
 	if forward == nil {
-		return hs.Printf("alias not exist by name:%v", pathParts[0])
+		return hs.Printf("alias not exist by name:%v", name)
 	}
 	hs.R.URL.Scheme = forward.Remote.Scheme
 	hs.R.URL.Host = forward.Remote.Host
+	if len(c.WebAuth) > 0 && forward.Local.Query().Get("auth") != "0" {
+		username, password, ok := hs.R.BasicAuth()
+		if !(ok && c.WebAuth == fmt.Sprintf("%v:%s", username, password)) {
+			hs.W.Header().Set("WWW-Authenticate", "Basic realm=Reverse Server")
+			hs.W.WriteHeader(401)
+			hs.Printf("%v", "401 Unauthorized")
+			return routing.HRES_RETURN
+		}
+	}
 	//
 	procDail := func(network, addr string) (raw net.Conn, err error) {
 		piped, raw, err := CreatePipedConn()

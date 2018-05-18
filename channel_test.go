@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Centny/gwf/routing"
 
 	"github.com/Centny/gwf/routing/httptest"
 
@@ -21,6 +24,7 @@ func TestChannel(t *testing.T) {
 	server := NewChannelServer(":2832", "Server")
 	server.ACL["^[ax.*$"] = "abc"
 	server.ACL["^test.*$"] = "abc"
+	server.WebSuffix = ".loc"
 	err := server.Start()
 	if err != nil {
 		t.Error(err)
@@ -70,7 +74,24 @@ func TestChannel(t *testing.T) {
 		return
 	}
 	{ //test web forward
-		ts := httptest.NewServer2(server)
+		ts := httptest.NewServer(func(hs *routing.HTTPSession) routing.HResult {
+			if hs.R.URL.Path == "/web" {
+				return server.ListWebForward(hs)
+			}
+			name := strings.TrimPrefix(hs.R.URL.Path, "/web/")
+			switch name {
+			case "loctest0":
+				hs.R.Host = "loctest0.loc"
+			case "loctest1":
+				hs.R.Host = "loctest1.loc"
+			case "loctest2":
+				hs.R.Host = "loctest2.loc"
+			case "loctest3":
+				hs.R.Host = "loctest3.loc"
+			}
+			hs.R.URL.Path = "/"
+			return server.ProcWebForward(hs)
+		})
 		//
 		data, err := ts.G("/web")
 		if err != nil {
