@@ -1,0 +1,12 @@
+[Unit]
+Description=Reverse Runner Service
+After=network.target
+
+[Service]
+User=rs-runner
+Restart=always
+WorkingDirectory=/srv/rsck/
+ExecStart=/srv/rsck/rsck -r -cert=certs/client.pem -key=certs/client.key -server <server> -name <name> -token <token> -showlog=1
+
+[Install]
+WantedBy=multi-user.target

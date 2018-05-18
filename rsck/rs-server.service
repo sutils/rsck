@@ -1,0 +1,12 @@
+[Unit]
+Description=Reverse Server Service
+After=network.target
+
+[Service]
+User=rs-server
+Restart=always
+WorkingDirectory=/srv/rsck/
+ExecStart=/srv/rsck/rsck -s -cert=certs/server.pem -key=certs/server.key -auth <auth> -acl <acl> -showlog=1
+
+[Install]
+WantedBy=multi-user.target

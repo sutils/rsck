@@ -29,14 +29,8 @@ echo "make client cert"
 openssl req -new -nodes -x509 -out $srv_out/certs/client.pem -keyout $srv_out/certs/client.key -days 3650 -subj "/C=CN/ST=NRW/L=Earth/O=Random Company/OU=IT/CN=rsck.dyang.org/emailAddress=cert@dyang.org"
 
 ###
-if [ "$1" != "" ];then
-	curl -o $srv_out/srvd $1/srvd
-	curl -o $srv_out/srvd_i $1/srvd_i
-	chmod +x $srv_out/srvd
-	chmod +x $srv_out/srvd_i
-	echo "./srvd_i \$1 $srv_name \$2 \$3" >$srv_out/install.sh
-	chmod +x $srv_out/install.sh
-fi
+cp -f rs-* $srv_out/
+
 ###
 cd $output
 zip -r $srv_name-$srv_ver-`uname`.zip $srv_name
