@@ -152,7 +152,7 @@ var HTML = `
             text-align: center;
         }
 
-		.noneborder {
+        .noneborder {
             border: 0px;
             padding: 0px;
             margin: 0px;
@@ -173,7 +173,7 @@ var HTML = `
 
 <body>
     <form action="add" method="POST">
-		<table>
+        <table>
             <td>
                 <textarea name="forwards"></textarea>
             </td>
@@ -182,50 +182,56 @@ var HTML = `
             </td>
         </table>
     </form>
-	<p class="list">
-		<table class="boder_1px_t" >
-			<tr class="boder_1px" >
-				<th class="boder_1px" >No</th>
-				<th class="boder_1px" >Name</th>
-				<th class="boder_1px" >Online</th>
-				<th class="boder_1px" >Remote</th>
-				<th class="boder_1px" >Forward</th>
-			</tr>
-			{{range $k, $v := .ns}}
-			{{$channel := index $.forwards $v}}
-			<tr class="boder_1px" >
-				<td class="boder_1px" >{{$k}}</td>
-				<td class="boder_1px" >{{$channel.Name}}</td>
-				<td class="boder_1px" >{{$channel.Online}}</td>
-				<td class="boder_1px" >{{$channel.Remote}}</td>
-				<td class="boder_1px" >
-					<table class="noneborder" >
-						{{range $i, $f := $channel.FS}}
-						<tr class="noneborder" style="height:20px">
-							<td class="noneborder" >{{$f}}</td>
-							<td class="noneborder" >
+    <p class="list">
+        <table class="boder_1px_t">
+            <tr class="boder_1px">
+                <th class="boder_1px">No</th>
+                <th class="boder_1px">Name</th>
+                <th class="boder_1px">Online</th>
+                <th class="boder_1px">Remote</th>
+                <th class="boder_1px">Forward</th>
+            </tr>
+            {{range $k, $v := .ns}} {{$channel := index $.forwards $v}}
+            <tr class="boder_1px">
+                <td class="boder_1px">{{$k}}</td>
+                <td class="boder_1px">{{$channel.Name}}</td>
+                <td class="boder_1px">{{$channel.Online}}</td>
+                <td class="boder_1px">{{$channel.Remote}}</td>
+                <td class="boder_1px">
+                    <table class="noneborder" style="width:100%">
+                        {{range $i, $f := $channel.FS}}
+                        <tr class="noneborder" style="height:20px">
+                            <td class="noneborder">{{$f}}</td>
+                            <td class="noneborder" style="width:60px;text-align:center;">
 								<a style="margin-left:10px;" href="remove?local={{$f.Local}}">Remove</a>
 							</td>
-						</tr>
-						{{end}}
-					</table>
-				</td>
-			</tr>
-			{{end}}
-		</table>
-	</p>
-	<table class="boder_1px" style="position:absolute;right:30px;top:5px;">
-		{{range $i, $r := $.recents}}
-		{{$f := index $r "forward"}}
-		<tr class="noneborder" style="height:20px;text-align:left;">
-			<td class="noneborder" >{{$f}}</td>
-			<td class="noneborder" >
-				<a style="margin-left:10px;" href="add?forwards={{$f}}">Add</a>
-			</td>
-		</tr>
-		{{end}}
-	</table>
+							<td class="noneborder" style="width:60px;text-align:center;">
+								{{if eq $f.Local.Scheme "web" }}
+								<a href="/web/{{$f.Local.Host}}/">Open</a>
+								{{else}}
+								&nbsp;
+								{{end}}
+							</td>
+                        </tr>
+                        {{end}}
+                    </table>
+                </td>
+            </tr>
+            {{end}}
+        </table>
+    </p>
+    <table class="boder_1px" style="position:absolute;right:30px;top:5px;">
+        {{range $i, $r := $.recents}} {{$f := index $r "forward"}}
+        <tr class="noneborder" style="height:20px;text-align:left;">
+            <td class="noneborder">{{$f}}</td>
+            <td class="noneborder">
+                <a style="margin-left:10px;" href="add?forwards={{$f}}">Add</a>
+            </td>
+        </tr>
+        {{end}}
+    </table>
 </body>
+
 </html>
 `
 
@@ -327,6 +333,7 @@ func startServer() {
 		hs.Redirect("/")
 		return routing.HRES_RETURN
 	})
+	routing.H("^/web.*$", server)
 	tpl, _ := template.New("n").Parse(HTML)
 	routing.HFunc("^.*$", func(hs *routing.HTTPSession) routing.HResult {
 		ns, forwards := server.AllForwards()

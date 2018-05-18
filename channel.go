@@ -1,13 +1,18 @@
 package rsck
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"html/template"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +21,7 @@ import (
 	"github.com/Centny/gwf/netw"
 	"github.com/Centny/gwf/netw/impl"
 	"github.com/Centny/gwf/pool"
+	"github.com/Centny/gwf/routing"
 	"github.com/Centny/gwf/util"
 )
 
@@ -71,13 +77,6 @@ func (f *ForwardListener) String() string {
 	return fmt.Sprintf("%v", f.Forward)
 }
 
-type Channel struct {
-	Name   string
-	Online bool
-	FS     []*Forward
-	Remote string
-}
-
 type fls []*Forward
 
 func (f fls) Len() int {
@@ -95,6 +94,13 @@ func (f fls) Swap(i, j int) {
 	f[i], f[j] = f[j], f[i]
 }
 
+type Channel struct {
+	Name   string
+	Online bool
+	FS     []*Forward
+	Remote string
+}
+
 type ChannelServer struct {
 	L            *netw.Listener
 	obdh         *impl.OBDH
@@ -107,26 +113,33 @@ type ChannelServer struct {
 	sequence     uint32
 	rawCons      map[uint32]net.Conn
 	rawConsLck   sync.RWMutex
-	Listeners    map[string]*ForwardListener
-	ListenersLck sync.RWMutex
+	listeners    map[string]*ForwardListener
+	listenersLck sync.RWMutex
 	HbDelay      int64
 	running      bool
+	//
+	webForward    map[string]*Forward
+	webForwardLck sync.RWMutex
+	WebPre        string
 }
 
 func NewChannelServer(port string, n string) (server *ChannelServer) {
 	server = &ChannelServer{
-		obdh:         impl.NewOBDH(),
-		cons:         map[string]netw.Con{},
-		consLck:      sync.RWMutex{},
-		hbs:          map[string]int64{},
-		hbsLck:       sync.RWMutex{},
-		ACL:          map[string]string{},
-		aclLck:       sync.RWMutex{},
-		rawCons:      map[uint32]net.Conn{},
-		rawConsLck:   sync.RWMutex{},
-		Listeners:    map[string]*ForwardListener{},
-		ListenersLck: sync.RWMutex{},
-		HbDelay:      10000,
+		obdh:          impl.NewOBDH(),
+		cons:          map[string]netw.Con{},
+		consLck:       sync.RWMutex{},
+		hbs:           map[string]int64{},
+		hbsLck:        sync.RWMutex{},
+		ACL:           map[string]string{},
+		aclLck:        sync.RWMutex{},
+		rawCons:       map[uint32]net.Conn{},
+		rawConsLck:    sync.RWMutex{},
+		listeners:     map[string]*ForwardListener{},
+		listenersLck:  sync.RWMutex{},
+		HbDelay:       10000,
+		webForward:    map[string]*Forward{},
+		webForwardLck: sync.RWMutex{},
+		WebPre:        "/web",
 	}
 	server.L = netw.NewListenerN(pool.BP, port, n, netw.NewCCH(server, server.obdh), impl.Json_NewCon)
 	// server.L.Runner_ = &netw.LenRunner{}
@@ -180,11 +193,15 @@ func (c *ChannelServer) OnHeartbeatF(con netw.Cmd) int {
 
 func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
 	c.consLck.RLock()
-	c.ListenersLck.RLock()
+	c.listenersLck.RLock()
+	c.webForwardLck.RLock()
 	fs = map[string]*Channel{}
 	nameForward := map[string][]*Forward{}
-	for _, f := range c.Listeners {
+	for _, f := range c.listeners {
 		nameForward[f.Name] = append(nameForward[f.Name], f.Forward)
+	}
+	for _, f := range c.webForward {
+		nameForward[f.Name] = append(nameForward[f.Name], f)
 	}
 	for name, nfs := range nameForward {
 		sort.Sort(fls(nfs))
@@ -210,7 +227,8 @@ func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
 		}
 		ns = append(ns, name)
 	}
-	c.ListenersLck.RUnlock()
+	c.webForwardLck.RUnlock()
+	c.listenersLck.RUnlock()
 	c.consLck.RUnlock()
 	sort.Sort(util.NewStringSorter(ns))
 	return
@@ -247,29 +265,45 @@ func (c *ChannelServer) AddUriForward(uri string) (err error) {
 }
 
 func (c *ChannelServer) AddForward(forward *Forward) (err error) {
-	l, err := net.Listen(forward.Local.Scheme, forward.Local.Host)
-	if err != nil {
-		log.W("ChannelServer add forward by %v fail with %v", forward, err)
-		return
+	switch forward.Local.Scheme {
+	case "tcp":
+		var l net.Listener
+		l, err = net.Listen(forward.Local.Scheme, forward.Local.Host)
+		if err != nil {
+			log.W("ChannelServer add tcp forward by %v fail with %v", forward, err)
+			return
+		}
+		c.listenersLck.Lock()
+		forwardListener := &ForwardListener{
+			L:       l,
+			Forward: forward,
+		}
+		c.listeners[forward.Local.String()] = forwardListener
+		c.listenersLck.Unlock()
+		go c.runForward(forwardListener)
+		log.D("ChannelServer add tcp forward by %v success", forward)
+	case "web":
+		c.webForwardLck.Lock()
+		if _, ok := c.webForward[forward.Local.Host]; ok {
+			err = fmt.Errorf("web host key(%v) is exists", forward.Local.Host)
+			log.W("ChannelServer add web forward by %v fail with key exists", forward)
+		} else {
+			c.webForward[forward.Local.Host] = forward
+			log.D("ChannelServer add web forward by %v success", forward)
+		}
+		c.webForwardLck.Unlock()
+	default:
+		err = fmt.Errorf("scheme %v is not suppored", forward.Local.Scheme)
 	}
-	c.ListenersLck.Lock()
-	forwardListener := &ForwardListener{
-		L:       l,
-		Forward: forward,
-	}
-	c.Listeners[forward.Local.String()] = forwardListener
-	c.ListenersLck.Unlock()
-	go c.runForward(forwardListener)
-	log.D("ChannelServer add forward by %v success", forward)
 	return
 }
 
 func (c *ChannelServer) RemoveForward(local string) {
 	log.D("ChannelServer removing forward by %v success", local)
-	c.ListenersLck.Lock()
-	listener := c.Listeners[local]
-	delete(c.Listeners, local)
-	c.ListenersLck.Unlock()
+	c.listenersLck.Lock()
+	listener := c.listeners[local]
+	delete(c.listeners, local)
+	c.listenersLck.Unlock()
 	if listener != nil {
 		listener.L.Close()
 	}
@@ -304,6 +338,83 @@ func (c *ChannelServer) runForward(forward *ForwardListener) {
 	}
 }
 
+func (c *ChannelServer) SrvHTTP(hs *routing.HTTPSession) routing.HResult {
+	path := strings.TrimPrefix(hs.R.URL.Path, c.WebPre)
+	path = strings.TrimSpace(strings.TrimPrefix(path, "/"))
+	if len(path) < 1 {
+		var fs = fls{}
+		c.webForwardLck.Lock()
+		for _, forward := range c.webForward {
+			fs = append(fs, forward)
+		}
+		c.webForwardLck.Unlock()
+		tmpl, _ := template.New("list").Parse("<pre>\n{{range $v:=.}}<a href=\"{{$v.Local.Host}}\">{{$v}}</a>\n{{end}}</pre>")
+		sort.Sort(fs)
+		hs.W.Header().Set("Content-Type", "text/html;charset=utf-8")
+		tmpl.Execute(hs.W, fs)
+		return routing.HRES_RETURN
+	}
+	pathParts := strings.SplitN(path, "/", 2)
+	if len(pathParts) > 1 {
+		hs.R.URL.Path = "/" + pathParts[1]
+	} else {
+		hs.R.URL.Path = "/"
+	}
+	c.webForwardLck.Lock()
+	forward := c.webForward[pathParts[0]]
+	c.webForwardLck.Unlock()
+	if forward == nil {
+		return hs.Printf("alias not exist by name:%v", pathParts[0])
+	}
+	hs.R.URL.Scheme = forward.Remote.Scheme
+	hs.R.URL.Host = forward.Remote.Host
+	//
+	procDail := func(network, addr string) (raw net.Conn, err error) {
+		piped, raw, err := CreatePipedConn()
+		if err != nil {
+			return
+		}
+		err = c.Dail(piped, forward.Name, forward.Remote)
+		if err != nil {
+			piped.Close()
+		}
+		return
+	}
+	procDailTLS := func(network, addr string) (raw net.Conn, err error) {
+		pipedA, pipedB, err := CreatePipedConn()
+		if err != nil {
+			return
+		}
+		tlsConn := tls.Client(pipedB, &tls.Config{
+			InsecureSkipVerify: true,
+		})
+		err = c.Dail(pipedA, forward.Name, forward.Remote)
+		if err != nil {
+			pipedB.Close()
+			tlsConn.Close()
+			return
+		}
+		err = tlsConn.Handshake()
+		if err != nil {
+			pipedB.Close()
+			tlsConn.Close()
+			return
+		}
+		raw = tlsConn
+		return
+	}
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.Host = req.URL.Host
+		},
+		Transport: &http.Transport{
+			Dial:    procDail,
+			DialTLS: procDailTLS,
+		},
+	}
+	proxy.ServeHTTP(hs.W, hs.R)
+	return routing.HRES_RETURN
+}
 func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 	var args = util.Map{}
 	con.V(&args)

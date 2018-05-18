@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Centny/gwf/routing/httptest"
+
 	"github.com/Centny/gwf/netw"
 )
 
@@ -25,6 +27,7 @@ func TestChannel(t *testing.T) {
 		return
 	}
 	runner := NewChannelRunner("localhost:2832", "test0", "abc")
+	runner.AddDailer(NewWebDailer())
 	runner.AddDailer(NewTCPDailer())
 	runner.Start()
 	time.Sleep(time.Second)
@@ -44,6 +47,65 @@ func TestChannel(t *testing.T) {
 	err = server.AddUriForward("tcp://:2830<test0>tcp://localhost:2834")
 	if err != nil {
 		t.Error(err)
+		return
+	}
+	err = server.AddUriForward("web://loctest0<test0>http://web?dir=/tmp")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = server.AddUriForward("web://loctest2<test0>http://192.168.1.1")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = server.AddUriForward("web://loctest1<test0>https://w.dyang.org")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	err = server.AddUriForward("web://loctest3<test1>http://192.168.1.1")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	{ //test web forward
+		ts := httptest.NewServer2(server)
+		//
+		data, err := ts.G("/web")
+		if err != nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		data, err = ts.G("/web/loctest0")
+		if err != nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		data, err = ts.G("/web/loctest1")
+		if err != nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		data, err = ts.G("/web/loctest2")
+		if err != nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		data, err = ts.G("/web/loctest3")
+		if err == nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
 		return
 	}
 	{
@@ -67,7 +129,7 @@ func TestChannel(t *testing.T) {
 						}
 						allreaded += readed
 						// fmt.Println("->", string(buf[:readed]))
-						fmt.Printf("allreaded:%d,allwrited:%d\n", allreaded, allwrited)
+						//fmt.Printf("allreaded:%d,allwrited:%d\n", allreaded, allwrited)
 					}
 				}()
 				for i := 0; i < 100; i++ {

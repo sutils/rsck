@@ -56,14 +56,27 @@ func (t *TCPDailer) Bootstrap() error {
 }
 
 func (t *TCPDailer) Matched(uri string) bool {
-	return strings.HasPrefix(uri, "tcp://")
+	return true
 }
 
 func (t *TCPDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err error) {
 	remote, err := url.Parse(uri)
 	if err == nil {
-		raw, err = net.Dial(remote.Scheme, remote.Host)
-
+		network := remote.Scheme
+		host := remote.Host
+		switch network {
+		case "http":
+			network = "tcp"
+			if !strings.HasSuffix(host, ":80") {
+				host += ":80"
+			}
+		case "https":
+			network = "tcp"
+			if !strings.HasSuffix(host, ":443") {
+				host += ":443"
+			}
+		}
+		raw, err = net.Dial(network, host)
 	}
 	return
 }
@@ -197,7 +210,7 @@ func (web *WebDailer) Bootstrap() error {
 }
 
 func (web *WebDailer) Matched(uri string) bool {
-	return strings.HasPrefix(uri, "tcp://web")
+	return strings.HasPrefix(uri, "http://web")
 }
 
 func (web *WebDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err error) {
@@ -348,6 +361,7 @@ func NewWebdavHandler(dir string) *WebdavHandler {
 }
 
 func (w *WebdavHandler) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+	log.D("WebdavHandler proc %v", req.RequestURI)
 	if req.Method == "GET" {
 		w.fs.ServeHTTP(resp, req)
 	} else {
