@@ -10,7 +10,7 @@ output=build
 
 #### Package ####
 srv_name=rsck
-srv_ver=1.4.5
+srv_ver=1.4.6
 ##
 srv_deamon="$srv_name"d
 srv_out=$output/$srv_name
