@@ -8,11 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Centny/gwf/routing"
+	"github.com/Centny/gwf/routing/httptest"
+
 	"github.com/Centny/gwf/util"
 )
 
 func TestCmdDailer(t *testing.T) {
 	cmd := NewCmdDailer()
+	cmd.Bootstrap()
+	if !cmd.Matched("tcp://cmd?exec=bash") {
+		t.Error("error")
+		return
+	}
 	raw, err := cmd.Dail(10, "tcp://cmd?exec=bash")
 	if err != nil {
 		t.Error(err)
@@ -22,10 +30,45 @@ func TestCmdDailer(t *testing.T) {
 	fmt.Fprintf(raw, "ls\n")
 	fmt.Fprintf(raw, "ls /tmp/\n")
 	fmt.Fprintf(raw, "echo abc\n")
-	time.Sleep(time.Second)
+	time.Sleep(200 * time.Millisecond)
+	raw.Write(CMD_CTRL_C)
+	time.Sleep(200 * time.Millisecond)
+	raw.Close()
+	time.Sleep(200 * time.Millisecond)
+	//for cover
+	fmt.Printf("%v\n", cmd)
+	//
+	//test encoding
+	raw, err = cmd.Dail(10, "tcp://cmd?exec=bash&LC=zh_CN.GBK")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	go io.Copy(os.Stdout, raw)
+	fmt.Fprintf(raw, "ls\n")
+	time.Sleep(200 * time.Millisecond)
+	raw.Close()
+	//
+	raw, err = cmd.Dail(10, "tcp://cmd?exec=bash&LC=zh_CN.GB18030")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	go io.Copy(os.Stdout, raw)
+	fmt.Fprintf(raw, "ls\n")
+	time.Sleep(200 * time.Millisecond)
+	raw.Close()
+	//
+	//test error
+	_, err = cmd.Dail(100, "://cmd")
+	if err == nil {
+		t.Error("error")
+		return
+	}
 }
 
 func TestWebDailer(t *testing.T) {
+	//test web dailer
 	l, err := net.Listen("tcp", ":2422")
 	if err != nil {
 		t.Error(err)
@@ -59,4 +102,35 @@ func TestWebDailer(t *testing.T) {
 		}
 	}()
 	fmt.Println(util.HGet("http://localhost:2422/"))
+	dailer.Shutdown()
+	time.Sleep(100 * time.Millisecond)
+	//for cover
+	fmt.Printf("%v,%v\n", dailer.Addr(), dailer.Network())
+	//test web conn
+	conn, _, err := PipeWebDailerConn(100, "tcp://web?dir=/tmp")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	conn.SetDeadline(time.Now())
+	conn.SetReadDeadline(time.Now())
+	conn.SetWriteDeadline(time.Now())
+	fmt.Printf("%v,%v,%v\n", conn.LocalAddr(), conn.RemoteAddr(), conn.Network())
+	//test error
+	_, _, err = PipeWebDailerConn(100, "://")
+	if err == nil {
+		t.Error(err)
+		return
+	}
+	_, _, err = PipeWebDailerConn(100, "tcp://web")
+	if err == nil {
+		t.Error(err)
+		return
+	}
+	//
+	ts := httptest.NewServer(func(hs *routing.HTTPSession) routing.HResult {
+		dailer.ServeHTTP(hs.W, hs.R)
+		return routing.HRES_RETURN
+	})
+	fmt.Println(ts.G("/"))
 }

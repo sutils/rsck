@@ -76,20 +76,20 @@ func (f *ForwardListener) String() string {
 	return fmt.Sprintf("%v", f.Forward)
 }
 
-type fls []*Forward
+type ForwardSorter []*Forward
 
-func (f fls) Len() int {
+func (f ForwardSorter) Len() int {
 	return len(f)
 }
 
-func (f fls) Less(i, j int) bool {
+func (f ForwardSorter) Less(i, j int) bool {
 	if f[i].Name == f[j].Name {
 		return f[i].Local.String() < f[j].Local.String()
 	}
 	return f[i].Name < f[j].Name
 }
 
-func (f fls) Swap(i, j int) {
+func (f ForwardSorter) Swap(i, j int) {
 	f[i], f[j] = f[j], f[i]
 }
 
@@ -164,7 +164,7 @@ func (c *ChannelServer) Close() {
 }
 
 func (c *ChannelServer) loopHb() {
-	log.D("ChannelServer start heartbeat by delay(%vms)", c.HbDelay)
+	log.D("ChannelServer(%v) start heartbeat by delay(%vms)", c, c.HbDelay)
 	for c.running {
 		c.consLck.Lock()
 		c.hbsLck.Lock()
@@ -173,7 +173,7 @@ func (c *ChannelServer) loopHb() {
 			if last, ok := c.hbs[name]; ok && now-last < c.HbDelay {
 				continue
 			}
-			log.D("ChannelServer check %v heartbeat is timeout, will close it", name)
+			log.D("ChannelServer(%v) check %v heartbeat is timeout, will close it", c, name)
 			con.Close()
 		}
 		c.hbsLck.Unlock()
@@ -203,7 +203,7 @@ func (c *ChannelServer) AllForwards() (ns []string, fs map[string]*Channel) {
 		nameForward[f.Name] = append(nameForward[f.Name], f)
 	}
 	for name, nfs := range nameForward {
-		sort.Sort(fls(nfs))
+		sort.Sort(ForwardSorter(nfs))
 		con, online := c.cons[name]
 		fs[name] = &Channel{
 			FS:     nfs,
@@ -242,7 +242,7 @@ func (c *ChannelServer) Dail(raw net.Conn, name string, remote *url.URL) (err er
 		return
 	}
 	cid := atomic.AddUint32(&c.sequence, 1)
-	log.D("ChannelServer start dail to <%v>%v by cid(%v)", name, remote, cid)
+	log.D("ChannelServer(%v) start dail to <%v>%v by cid(%v)", c, name, remote, cid)
 	_, err = con.Writev2([]byte{ChannelByteDail[0]}, util.Map{
 		"cid": cid,
 		"uri": remote.String(),
@@ -269,7 +269,7 @@ func (c *ChannelServer) AddForward(forward *Forward) (err error) {
 		var l net.Listener
 		l, err = net.Listen(forward.Local.Scheme, forward.Local.Host)
 		if err != nil {
-			log.W("ChannelServer add tcp forward by %v fail with %v", forward, err)
+			log.W("ChannelServer(%v) add tcp forward by %v fail with %v", c, forward, err)
 			return
 		}
 		c.listenersLck.Lock()
@@ -277,18 +277,18 @@ func (c *ChannelServer) AddForward(forward *Forward) (err error) {
 			L:       l,
 			Forward: forward,
 		}
-		c.listeners[forward.Local.String()] = forwardListener
+		c.listeners[forward.Local.Host] = forwardListener
 		c.listenersLck.Unlock()
 		go c.runForward(forwardListener)
-		log.D("ChannelServer add tcp forward by %v success", forward)
+		log.D("ChannelServer(%v) add tcp forward by %v success", c, forward)
 	case "web":
 		c.webForwardLck.Lock()
 		if _, ok := c.webForward[forward.Local.Host]; ok {
 			err = fmt.Errorf("web host key(%v) is exists", forward.Local.Host)
-			log.W("ChannelServer add web forward by %v fail with key exists", forward)
+			log.W("ChannelServer(%v) add web forward by %v fail with key exists", c, forward)
 		} else {
 			c.webForward[forward.Local.Host] = forward
-			log.D("ChannelServer add web forward by %v success", forward)
+			log.D("ChannelServer(%v) add web forward by %v success", c, forward)
 		}
 		c.webForwardLck.Unlock()
 	default:
@@ -308,22 +308,22 @@ func (c *ChannelServer) RemoveForward(local string) (err error) {
 		delete(c.webForward, rurl.Host)
 		c.webForwardLck.Unlock()
 		if forward != nil {
-			log.D("ChannelServer removing web forward by %v success", local)
+			log.D("ChannelServer(%v) removing web forward by %v success", c, local)
 		} else {
 			err = fmt.Errorf("web forward is not exist by %v", local)
-			log.D("ChannelServer removing web forward by %v fail with not exists", local)
+			log.D("ChannelServer(%v) removing web forward by %v fail with not exists", c, local)
 		}
 	} else {
 		c.listenersLck.Lock()
-		listener := c.listeners[local]
-		delete(c.listeners, local)
+		listener := c.listeners[rurl.Host]
+		delete(c.listeners, rurl.Host)
 		c.listenersLck.Unlock()
 		if listener != nil {
 			listener.L.Close()
-			log.D("ChannelServer removing forward by %v success", local)
+			log.D("ChannelServer(%v) removing forward by %v success", c, local)
 		} else {
 			err = fmt.Errorf("forward is not exitst")
-			log.D("ChannelServer removing forward by %v fail with not exists", local)
+			log.D("ChannelServer(%v) removing forward by %v fail with not exists", c, local)
 		}
 	}
 	return
@@ -333,18 +333,18 @@ func (c *ChannelServer) runForward(forward *ForwardListener) {
 	var limit int
 	err := forward.LocalValidF(`limit,O|I,R:-1`, &limit)
 	if err != nil {
-		log.W("ChannelServer forward listener(%v) get the limit valid fail with %v", forward, err)
+		log.W("ChannelServer(%v) forward listener(%v) get the limit valid fail with %v", c, forward, err)
 	}
 	for {
 		raw, err := forward.L.Accept()
 		if err != nil {
-			log.D("ChannelServer forward listener(%v) accept fail with %v", forward, err)
+			log.D("ChannelServer(%v) forward listener(%v) accept fail with %v", c, forward, err)
 			break
 		}
-		log.D("ChannelServer forward listener(%v) accept from %v", forward, raw.RemoteAddr())
+		log.D("ChannelServer(%v) forward listener(%v) accept from %v", c, forward, raw.RemoteAddr())
 		err = c.Dail(raw, forward.Name, forward.Remote)
 		if err != nil {
-			log.W("ChannelServer forward listener(%v) dail fail with %v", forward, err)
+			log.W("ChannelServer(%v) forward listener(%v) dail fail with %v", c, forward, err)
 			raw.Close()
 			continue
 		}
@@ -356,6 +356,9 @@ func (c *ChannelServer) runForward(forward *ForwardListener) {
 			}
 		}
 	}
+	c.listenersLck.Lock()
+	delete(c.listeners, forward.Local.Host)
+	c.listenersLck.Unlock()
 }
 
 // func (c *ChannelServer) ListWebForward(hs *routing.HTTPSession) routing.HResult {
@@ -415,18 +418,15 @@ func (c *ChannelServer) ProcWebForward(hs *routing.HTTPSession) routing.HResult 
 			InsecureSkipVerify: true,
 		})
 		err = c.Dail(pipedA, forward.Name, forward.Remote)
-		if err != nil {
+		if err == nil {
+			err = tlsConn.Handshake()
+		}
+		if err == nil {
+			raw = tlsConn
+		} else {
 			pipedB.Close()
 			tlsConn.Close()
-			return
 		}
-		err = tlsConn.Handshake()
-		if err != nil {
-			pipedB.Close()
-			tlsConn.Close()
-			return
-		}
-		raw = tlsConn
 		return
 	}
 	proxy := &httputil.ReverseProxy{
@@ -450,7 +450,7 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 		token,R|S,L:0;
 		`, &name, &token)
 	if err != nil {
-		log.E("ChannelServer login fail with parse argument error:%v", err)
+		log.E("ChannelServer(%v) login fail with parse argument error:%v", c, err)
 		con.Close()
 		return -1
 	}
@@ -460,7 +460,7 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 	for n, k := range c.ACL {
 		reg, err := regexp.Compile(n)
 		if err != nil {
-			log.E("ChannelServer regex compile acl name(%v) fail with %v", n, err)
+			log.E("ChannelServer(%v) regex compile acl name(%v) fail with %v", c, n, err)
 			continue
 		}
 		if reg.MatchString(name) && k == token {
@@ -469,7 +469,7 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 		}
 	}
 	if !access {
-		log.E("ChannelServer login fail with not access by name(%v),token(%v)", name, token)
+		log.E("ChannelServer(%v) login fail with not access by name(%v),token(%v)", c, name, token)
 		con.Close()
 		return -1
 	}
@@ -478,7 +478,7 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 	c.hbsLck.Unlock()
 	c.consLck.Lock()
 	if having, ok := c.cons[name]; ok {
-		log.W("ChannelServer login with having name(%v) connection, will close it", name)
+		log.W("ChannelServer(%v) login with having name(%v) connection, will close it", c, name)
 		having.Close()
 	}
 	con.SetWait(true)
@@ -486,7 +486,7 @@ func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 	con.Kvs().SetVal("token", token)
 	c.cons[name] = con.BaseCon()
 	c.consLck.Unlock()
-	log.D("ChannelServer accept channel(%v) from %v", name, con.RemoteAddr())
+	log.D("ChannelServer(%v) accept channel(%v) from %v", c, name, con.RemoteAddr())
 	return 0
 }
 
@@ -501,12 +501,12 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 		error,R|S,L:0;
 		`, &cid, &uri, &errmsg)
 	if err != nil {
-		log.E("ChannelServer do dail back fail with parse argument error:%v", err)
+		log.E("ChannelServer(%v) do dail back fail with parse argument error:%v", c, err)
 		con.Close()
 		return -1
 	}
 	if errmsg != "NONE" {
-		log.W("ChannelServer dail to %v/%v fail with error:%v", con.Kvs().StrVal("name"), uri, errmsg)
+		log.W("ChannelServer(%v) dail to %v/%v fail with error:%v", c, con.Kvs().StrVal("name"), uri, errmsg)
 		c.rawConsLck.Lock()
 		raw := c.rawCons[cid]
 		if raw != nil {
@@ -520,7 +520,7 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 	raw := c.rawCons[cid]
 	c.rawConsLck.Unlock()
 	if raw == nil {
-		log.W("ChannelServer do dail back fail with raw con by %v is not exist", cid)
+		log.W("ChannelServer(%v) do dail back fail with raw con by %v is not exist", c, cid)
 		con.BaseCon().Writev2(ChannelByteClose, util.Map{
 			"cid": cid,
 		})
@@ -541,20 +541,20 @@ func (c *ChannelServer) readRawCon(name string, cid uint32, raw net.Conn) {
 	for {
 		readed, err := raw.Read(buf[4:])
 		if err != nil {
-			log.D("ChannelServer read %v raw conn fail with %v", cid, err)
+			log.D("ChannelServer(%v) read %v raw conn fail with %v", c, cid, err)
 			break
 		}
 		c.consLck.RLock()
 		channel := c.cons[name]
 		c.consLck.RUnlock()
 		if channel == nil {
-			log.D("ChannelServer read %v raw con will stop by channel(%v) not found", cid, name)
+			log.D("ChannelServer(%v) read %v raw con will stop by channel(%v) not found", c, cid, name)
 			break
 		}
-		log_d("ChannelServer read raw(%v):%v", cid, buf[4:readed+4])
+		log_d("ChannelServer(%v) read raw(%v):%v", c, cid, readed)
 		_, err = channel.Writeb(ChannelByteData, buf[:readed+4])
 		if err != nil {
-			log.D("ChannelServer %v raw write to channel fail with %v", cid, err)
+			log.D("ChannelServer(%v) %v raw write to channel fail with %v", c, cid, err)
 			break
 		}
 	}
@@ -575,7 +575,7 @@ func (c *ChannelServer) readRawCon(name string, cid uint32, raw net.Conn) {
 func (c *ChannelServer) OnDataF(con netw.Cmd) int {
 	buf := con.Data()
 	if len(buf) < 5 {
-		log.E("ChannelServer receive bad data by less 5")
+		log.E("ChannelServer(%v) receive bad data by less 5", c)
 		return -1
 	}
 	cid := binary.BigEndian.Uint32(buf)
@@ -600,11 +600,11 @@ func (c *ChannelServer) OnRawCloseF(con netw.Cmd) int {
 		cid,R|I,R:0;
 		`, &cid)
 	if err != nil {
-		log.E("ChannelServer do raw close fail with parse argument error:%v", err)
+		log.E("ChannelServer(%v) do raw close fail with parse argument error:%v", c, err)
 		con.Close()
 		return -1
 	}
-	log.D("ChannelServer receive close notify on raw(%v)", cid)
+	log.D("ChannelServer(%v) receive close notify on raw(%v)", c, cid)
 	c.rawConsLck.Lock()
 	rawCon := c.rawCons[cid]
 	c.rawConsLck.Unlock()
@@ -630,7 +630,11 @@ func (c *ChannelServer) OnClose(con netw.Con) {
 	} else {
 		c.consLck.Unlock()
 	}
-	log.D("ChannelRunner channel(%v) from %v is closed", name, con.RemoteAddr())
+	log.D("ChannelServer(%v) channel(%v) from %v is closed", c, name, con.RemoteAddr())
+}
+
+func (c *ChannelServer) String() string {
+	return c.L.Id()
 }
 
 type ChannelRunner struct {
@@ -666,7 +670,7 @@ func NewChannelRunner(addr, name, token string) (runner *ChannelRunner) {
 func (c *ChannelRunner) AddDailer(dailer Dailer) error {
 	err := dailer.Bootstrap()
 	if err != nil {
-		log.E("ChannelRunner bootstrap dailer fail with %v", err)
+		log.E("ChannelRunner(%v) bootstrap dailer fail with %v", c, err)
 		return err
 	}
 	c.Dailers = append(c.Dailers, dailer)
@@ -677,17 +681,21 @@ func (c *ChannelRunner) Start() {
 	c.R.StartRunner()
 }
 
+func (c *ChannelRunner) Stop() {
+	c.R.StopRunner()
+}
+
 func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 	var args = util.Map{}
 	con.V(&args)
 	var cid uint32
-	var uri string = ""
+	var uri string
 	err := args.ValidF(`
 		cid,R|I,R:0;
 		uri,R|S,L:0;
 		`, &cid, &uri)
 	if err != nil {
-		log.E("ChannelRunner on dail fail with %v", err)
+		log.E("ChannelRunner(%v) on dail fail with %v", err, c)
 		con.Writev(util.Map{
 			"error": err.Error(),
 		})
@@ -697,13 +705,13 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 	err = fmt.Errorf("not matched dailer for %v", uri)
 	for _, dailer := range c.Dailers {
 		if dailer.Matched(uri) {
-			log.D("ChannelRunner will use %v to dail by %v", dailer, uri)
+			log.D("ChannelRunner(%v) will use %v to dail by %v", dailer, uri, c)
 			rawCon, err = dailer.Dail(cid, uri)
 			break
 		}
 	}
 	if err != nil {
-		log.E("ChannelRunner dail to %v fail with %v", uri, err)
+		log.E("ChannelRunner(%v) dail to %v fail with %v", uri, err, c)
 		con.Writev(util.Map{
 			"cid":   cid,
 			"uri":   uri,
@@ -720,14 +728,14 @@ func (c *ChannelRunner) OnDailF(con netw.Cmd) int {
 		"uri":   uri,
 		"error": "NONE",
 	})
-	log.D("ChannelRunner dail to %v success", uri)
+	log.D("ChannelRunner(%v) dail to %v success", uri, c)
 	return 0
 }
 
 func (c *ChannelRunner) OnDataF(con netw.Cmd) int {
 	buf := con.Data()
 	if len(buf) < 5 {
-		log.E("ChannelRunner receive bad data by less 5")
+		log.E("ChannelRunner(%v) receive bad data by less 5", c)
 		return -1
 	}
 	cid := binary.BigEndian.Uint32(buf)
@@ -742,7 +750,7 @@ func (c *ChannelRunner) OnDataF(con netw.Cmd) int {
 	}
 	_, err := rawCon.Write(buf[4:])
 	if err != nil {
-		log.D("ChannelRunner send data to raw(%v) fail with %v", cid, err)
+		log.D("ChannelRunner(%v) send data to raw(%v) fail with %v", c, cid, err)
 		rawCon.Close()
 	}
 	return 0
@@ -759,10 +767,10 @@ func (c *ChannelRunner) readRawCon(cid uint32, raw io.ReadWriteCloser) {
 	for {
 		readed, err := raw.Read(buf[4:])
 		if err != nil {
-			log.D("ChannelRunner read %v raw conn fail with %v", cid, err)
+			log.D("ChannelRunner(%v) read %v raw conn fail with %v", c, cid, err)
 			break
 		}
-		log_d("ChannelRunner read raw(%v):%v", cid, buf[4:readed+4])
+		log_d("ChannelRunner(%v) read raw(%v):%v", c, cid, readed)
 		c.R.Writeb(ChannelByteData, buf[:readed+4])
 		// if err != nil {
 		// 	log.D("ChannelRunner read %v raw and write to channel fail with %v", cid, err)
@@ -776,7 +784,7 @@ func (c *ChannelRunner) readRawCon(cid uint32, raw io.ReadWriteCloser) {
 	c.R.Writev2(ChannelByteClose, util.Map{
 		"cid": cid,
 	})
-	log.D("ChannelRunner %v raw conn reader is done", cid)
+	log.D("ChannelRunner(%v) %v raw conn reader is done", c, cid)
 }
 
 func (c *ChannelRunner) OnRawCloseF(con netw.Cmd) int {
@@ -787,7 +795,7 @@ func (c *ChannelRunner) OnRawCloseF(con netw.Cmd) int {
 		cid,R|I,R:0;
 		`, &cid)
 	if err != nil {
-		log.E("ChannelRunner do raw close fail with parse argument error:%v", err)
+		log.E("ChannelRunner(%v) do raw close fail with parse argument error:%v", c, err)
 		con.Close()
 		return -1
 	}
@@ -797,13 +805,13 @@ func (c *ChannelRunner) OnRawCloseF(con netw.Cmd) int {
 	if rawCon != nil {
 		rawCon.Close()
 	}
-	log.D("ChannelRunner receive notify raw(%v) is closed", cid)
+	log.D("ChannelRunner(%v) receive notify raw(%v) is closed", c, cid)
 	return 0
 }
 
 func (c *ChannelRunner) OnConn(con netw.Con) bool {
 	go func() {
-		log.D("ChannelRunner do login by name:%v,token:%v", c.Name, c.Token)
+		log.D("ChannelRunner(%v) do login by name:%v,token:%v", c, c.Name, c.Token)
 		con.Writeb([]byte{ChannelByteLogin[0]}, []byte(util.S2Json(util.Map{
 			"name":  c.Name,
 			"token": c.Token,
@@ -813,5 +821,9 @@ func (c *ChannelRunner) OnConn(con netw.Con) bool {
 }
 
 func (c *ChannelRunner) OnClose(con netw.Con) {
-	log.D("ChannelRunner channel is closed")
+	log.D("ChannelRunner(%v) channel is closed", c)
+}
+
+func (c *ChannelRunner) String() string {
+	return c.R.Id()
 }

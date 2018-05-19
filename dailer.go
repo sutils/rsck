@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/Centny/gwf/log"
 	"golang.org/x/net/webdav"
@@ -89,6 +88,8 @@ func (t *TCPDailer) String() string {
 	return "TCPDailer"
 }
 
+var CMD_CTRL_C = []byte{255, 244, 255, 253, 6}
+
 type CmdStdinWriter struct {
 	io.Writer
 	Replace  []byte
@@ -104,19 +105,22 @@ func (c *CmdStdinWriter) Write(p []byte) (n int, err error) {
 		}
 	}
 	if len(c.Replace) > 0 {
-		n = len(p)
-		_, err = c.Writer.Write(bytes.Replace(p, c.Replace, []byte{}, -1))
-		return
+		p = bytes.Replace(p, c.Replace, []byte{}, -1)
 	}
 	n, err = c.Writer.Write(p)
 	return
 }
 
 type CmdDailer struct {
+	Replace  []byte
+	CloseTag []byte
 }
 
 func NewCmdDailer() *CmdDailer {
-	return &CmdDailer{}
+	return &CmdDailer{
+		Replace:  []byte("\r"),
+		CloseTag: CMD_CTRL_C,
+	}
 }
 
 func (c *CmdDailer) Bootstrap() error {
@@ -150,8 +154,8 @@ func (c *CmdDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err er
 	cmd.Stderr = stdWriter
 	cmdWriter := &CmdStdinWriter{
 		Writer:   stdin,
-		Replace:  []byte("\r"),
-		CloseTag: []byte{255, 244, 255, 253, 6},
+		Replace:  c.Replace,
+		CloseTag: c.CloseTag,
 	}
 	combined := &CombinedReadWriterCloser{
 		Writer: cmdWriter,
@@ -209,7 +213,15 @@ func NewWebDailer() (dailer *WebDailer) {
 }
 
 func (web *WebDailer) Bootstrap() error {
-	go http.Serve(web, web)
+	go func() {
+		http.Serve(web, web)
+		close(web.accept)
+	}()
+	return nil
+}
+
+func (web *WebDailer) Shutdown() error {
+	web.accept <- nil
 	return nil
 }
 
@@ -239,7 +251,6 @@ func (web *WebDailer) Accept() (conn net.Conn, err error) {
 }
 
 func (web *WebDailer) Close() error {
-	close(web.accept)
 	return nil
 }
 func (web *WebDailer) Addr() net.Addr {
@@ -276,8 +287,7 @@ func (web *WebDailer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 }
 
 type WebDailerConn struct {
-	io.ReadCloser
-	io.Writer
+	*PipedConn
 	CID uint32
 	URI string
 	DIR string
@@ -293,37 +303,14 @@ func PipeWebDailerConn(cid uint32, uri string) (conn *WebDailerConn, raw io.Read
 		err = fmt.Errorf("the dir arguemnt is required")
 		return
 	}
-	inReader, outWriter, err := os.Pipe()
-	if err != nil {
-		return
-	}
-	outReader, inWriter, err := os.Pipe()
-	if err != nil {
-		return
-	}
 	conn = &WebDailerConn{
-		ReadCloser: inReader,
-		Writer:     inWriter,
-		CID:        cid,
-		URI:        uri,
-		DIR:        dir,
+		CID: cid,
+		URI: uri,
+		DIR: dir,
 	}
-	raw = &CombinedReadWriterCloser{
-		Reader: outReader,
-		Writer: outWriter,
-	}
+	conn.PipedConn, raw, err = CreatePipedConn()
 	return
 }
-
-// func (w *WebDailerConn) Write(p []byte) (n int, err error) {
-// 	n, err = w.Writer.Write(p)
-// 	return
-// }
-
-// func (w *WebDailerConn) Read(p []byte) (n int, err error) {
-// 	n, err = w.ReadCloser.Read(p)
-// 	return
-// }
 
 func (w *WebDailerConn) LocalAddr() net.Addr {
 	return w
@@ -331,20 +318,9 @@ func (w *WebDailerConn) LocalAddr() net.Addr {
 func (w *WebDailerConn) RemoteAddr() net.Addr {
 	return w
 }
-func (w *WebDailerConn) SetDeadline(t time.Time) error {
-	return nil
-}
-func (w *WebDailerConn) SetReadDeadline(t time.Time) error {
-	return nil
-}
-func (w *WebDailerConn) SetWriteDeadline(t time.Time) error {
-	return nil
-}
-
 func (w *WebDailerConn) Network() string {
-	return "tcp"
+	return "WebDailer"
 }
-
 func (w *WebDailerConn) String() string {
 	return fmt.Sprintf("%v", w.CID)
 }
