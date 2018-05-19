@@ -384,6 +384,7 @@ func (c *ChannelServer) ProcWebForward(hs *routing.HTTPSession) routing.HResult 
 	forward := c.webForward[name]
 	c.webForwardLck.Unlock()
 	if forward == nil {
+		hs.W.WriteHeader(404)
 		return hs.Printf("alias not exist by name:%v", name)
 	}
 	hs.R.URL.Scheme = forward.Remote.Scheme
@@ -397,23 +398,35 @@ func (c *ChannelServer) ProcWebForward(hs *routing.HTTPSession) routing.HResult 
 			return routing.HRES_RETURN
 		}
 	}
-	//
-	procDail := func(network, addr string) (raw net.Conn, err error) {
-		piped, raw, err := CreatePipedConn()
-		if err != nil {
-			return
-		}
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.Host = req.URL.Host
+		},
+		Transport: &http.Transport{
+			Dial: func(network, addr string) (raw net.Conn, err error) {
+				return c.procDail(network, addr, forward)
+			},
+			DialTLS: func(network, addr string) (raw net.Conn, err error) {
+				return c.procDailTLS(network, addr, forward)
+			},
+		},
+	}
+	proxy.ServeHTTP(hs.W, hs.R)
+	return routing.HRES_RETURN
+}
+func (c *ChannelServer) procDail(network, addr string, forward *Forward) (raw net.Conn, err error) {
+	piped, raw, err := CreatePipedConn()
+	if err == nil {
 		err = c.Dail(piped, forward.Name, forward.Remote)
 		if err != nil {
 			piped.Close()
 		}
-		return
 	}
-	procDailTLS := func(network, addr string) (raw net.Conn, err error) {
-		pipedA, pipedB, err := CreatePipedConn()
-		if err != nil {
-			return
-		}
+	return
+}
+func (c *ChannelServer) procDailTLS(network, addr string, forward *Forward) (raw net.Conn, err error) {
+	pipedA, pipedB, err := CreatePipedConn()
+	if err == nil {
 		tlsConn := tls.Client(pipedB, &tls.Config{
 			InsecureSkipVerify: true,
 		})
@@ -427,19 +440,8 @@ func (c *ChannelServer) ProcWebForward(hs *routing.HTTPSession) routing.HResult 
 			pipedB.Close()
 			tlsConn.Close()
 		}
-		return
 	}
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.Host = req.URL.Host
-		},
-		Transport: &http.Transport{
-			Dial:    procDail,
-			DialTLS: procDailTLS,
-		},
-	}
-	proxy.ServeHTTP(hs.W, hs.R)
-	return routing.HRES_RETURN
+	return
 }
 func (c *ChannelServer) OnLoginF(con netw.Cmd) int {
 	var args = util.Map{}
@@ -514,7 +516,7 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 		}
 		delete(c.rawCons, cid)
 		c.rawConsLck.Unlock()
-		return 0
+		return -1
 	}
 	c.rawConsLck.Lock()
 	raw := c.rawCons[cid]
@@ -524,7 +526,7 @@ func (c *ChannelServer) OnDailBackF(con netw.Cmd) int {
 		con.BaseCon().Writev2(ChannelByteClose, util.Map{
 			"cid": cid,
 		})
-		return 0
+		return -1
 	}
 	go c.readRawCon(con.Kvs().StrVal("name"), cid, raw)
 	return 0

@@ -2,6 +2,7 @@ package rsck
 
 import (
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"sort"
@@ -9,6 +10,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Centny/gwf/netw/impl"
+
+	"github.com/Centny/gwf/util"
+
+	"github.com/Centny/gwf/pool"
 
 	"github.com/Centny/gwf/routing"
 
@@ -63,16 +70,19 @@ func TestChannel(t *testing.T) {
 	server.ACL["^[ax.*$"] = "abc"
 	server.ACL["^test.*$"] = "abc"
 	server.WebSuffix = ".loc"
+	server.HbDelay = 2000
 	err := server.Start()
 	if err != nil {
 		t.Error(err)
 		return
 	}
 	runner := NewChannelRunner("localhost:2832", "test0", "abc")
+	runner.R.Tick = 1000
 	runner.AddDailer(NewWebDailer())
 	runner.AddDailer(NewTCPDailer())
 	runner.Start()
 	runner2 := NewChannelRunner("localhost:2832", "test1", "abc")
+	runner2.R.TickData = nil //disable tick
 	runner2.AddDailer(NewWebDailer())
 	runner2.AddDailer(NewTCPDailer())
 	runner2.Start()
@@ -136,6 +146,8 @@ func TestChannel(t *testing.T) {
 				hs.R.Host = "loctest2.loc"
 			case "loctest3":
 				hs.R.Host = "loctest3.loc"
+			case "loctest4":
+				hs.R.Host = "loctest4.loc"
 			}
 			hs.R.URL.Path = "/"
 			return server.ProcWebForward(hs)
@@ -175,6 +187,22 @@ func TestChannel(t *testing.T) {
 			return
 		}
 		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		data, err = ts.G("/web/loctest4")
+		if err == nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		//
+		server.WebAuth = "test:123"
+		data, err = ts.G("/web/loctest3")
+		if err == nil {
+			t.Errorf("%v-%v", err, data)
+			return
+		}
+		fmt.Printf("data->:\n%v\n\n\n\n", data)
+		server.WebAuth = ""
 	}
 	{
 		wg := sync.WaitGroup{}
@@ -361,6 +389,10 @@ func TestChannel(t *testing.T) {
 		runner3.Stop()
 		fmt.Println("stop runner3....")
 	}
+	{ //test add dailer error
+		runner4 := NewChannelRunner("localhost:2832", "test1", "abc")
+		runner4.AddDailer(NewErrDailer())
+	}
 	{ //test close runner
 		runner2.Stop()
 		time.Sleep(time.Second)
@@ -370,10 +402,165 @@ func TestChannel(t *testing.T) {
 		runner2 := NewChannelRunner("localhost:2832", "txss", "abcx")
 		runner2.Start()
 		time.Sleep(time.Second)
+		runner2.Stop()
 	}
 	{ //test close server
 		server.Close()
+		runner.Stop()
 		echo.L.Close()
 	}
 	time.Sleep(time.Second)
+}
+
+type ErrDailer struct {
+}
+
+func NewErrDailer() *ErrDailer {
+	return &ErrDailer{}
+}
+
+func (e *ErrDailer) Bootstrap() error {
+	return fmt.Errorf("test erro")
+}
+
+func (e *ErrDailer) Matched(uri string) bool {
+	return strings.HasPrefix(uri, "tcp://cmd")
+}
+
+func (e *ErrDailer) Dail(cid uint32, uri string) (raw io.ReadWriteCloser, err error) {
+	return
+}
+
+func TestError(t *testing.T) {
+	netw.MOD_MAX_SIZE = 4
+	netw.ShowLog = true
+	server := NewChannelServer(":2833", "Server")
+	server.ACL["^test.*$"] = "abc"
+	server.Start()
+	runner := NewChannelRunner("localhost:2833", "test0", "abc")
+	runner.Start()
+	time.Sleep(time.Second)
+	// l := rc.NewRC_Listener_m_j(pool.BP, ":28324", netw.NewDoNotH())
+	conn := netw.NewCon_(nil, pool.BP, netw.NewBufCon3(""))
+	conn.B2V_ = impl.Json_B2V
+	conn.V2B_ = impl.Json_V2B
+	//
+	emptyCmd := netw.NewCmd_(conn, []byte(util.S2Json(util.Map{})))
+	code := server.OnRawCloseF(emptyCmd)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = server.OnDailBackF(emptyCmd)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = runner.OnRawCloseF(emptyCmd)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = runner.OnDailF(emptyCmd)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = server.OnLoginF(emptyCmd)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	//
+	notExist := netw.NewCmd_(conn, []byte(util.S2Json(util.Map{
+		"cid":   10000,
+		"uri":   "xxx",
+		"error": "NONE",
+	})))
+	code = server.OnDailBackF(notExist)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	//
+	data1 := netw.NewCmd_(conn, []byte("abc"))
+	code = server.OnDataF(data1)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = runner.OnDataF(data1)
+	if code == 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	//
+	data2 := netw.NewCmd_(conn, []byte("11abc"))
+	code = server.OnDataF(data2)
+	if code != 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	code = runner.OnDataF(data2)
+	if code != 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	//
+	fmt.Printf("xxx--->\n")
+	data3 := netw.NewCmd_(conn, []byte{0, 0, 0, 0, 'a', 'b', 'c', 'd'})
+	runner.rawCons[0] = &ErrReadWriteCloser{}
+	code = runner.OnDataF(data3)
+	if code != 0 {
+		t.Errorf("code is %v", code)
+		return
+	}
+	// l.Close()
+	//
+	netw.MOD_MAX_SIZE = 2
+	server.readRawCon("xx", 100, netw.NewBufCon3("data"))
+	runner.readRawCon(100, netw.NewBufCon3("data"))
+	server.cons["abx"] = netw.NewCon_(nil, pool.BP, &ErrReadWriteCloser{})
+	server.readRawCon("abx", 100, netw.NewBufCon3("data"))
+	//
+	forward, _ := NewForward("tcp://:232<aa>tcp://localhost:222")
+	_, err := server.procDailTLS("tcp", "loc:232", forward)
+	if err == nil {
+		t.Error(err)
+		return
+	}
+}
+
+type ErrReadWriteCloser struct {
+}
+
+func (e *ErrReadWriteCloser) Write(p []byte) (n int, err error) {
+	err = fmt.Errorf("error")
+	return
+}
+
+func (e *ErrReadWriteCloser) Read(p []byte) (n int, err error) {
+	return
+}
+
+func (e *ErrReadWriteCloser) Close() (err error) {
+	return
+}
+
+func (e *ErrReadWriteCloser) LocalAddr() net.Addr {
+	return nil
+}
+
+func (e *ErrReadWriteCloser) RemoteAddr() net.Addr {
+	return nil
+}
+func (e *ErrReadWriteCloser) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (e *ErrReadWriteCloser) SetReadDeadline(t time.Time) error {
+	return nil
+}
+func (e *ErrReadWriteCloser) SetWriteDeadline(t time.Time) error {
+	return nil
 }

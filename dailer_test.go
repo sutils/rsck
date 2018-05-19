@@ -102,6 +102,7 @@ func TestWebDailer(t *testing.T) {
 		}
 	}()
 	fmt.Println(util.HGet("http://localhost:2422/"))
+	fmt.Println(util.HPost("http://localhost:2422/", nil))
 	dailer.Shutdown()
 	time.Sleep(100 * time.Millisecond)
 	//for cover
@@ -132,5 +133,15 @@ func TestWebDailer(t *testing.T) {
 		dailer.ServeHTTP(hs.W, hs.R)
 		return routing.HRES_RETURN
 	})
-	fmt.Println(ts.G("/"))
+	data, err := ts.G("/")
+	if err == nil {
+		t.Errorf("%v-%v", data, err)
+		return
+	}
+	//
+	_, err = dailer.Dail(100, "://")
+	if err == nil {
+		t.Error(err)
+		return
+	}
 }
